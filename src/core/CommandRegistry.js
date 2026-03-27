@@ -168,14 +168,6 @@ export default class CommandRegistry {
       }
     }
     if (!allow) {
-      if (command.ownerOnly) {
-        await messageContext.reply('This command is for the bot owner only.');
-        return;
-      }
-      if (command.adminOnly) {
-        await messageContext.reply('This command is restricted.');
-        return;
-      }
       return;
     }
     // --- END LOGIC FIX ---
@@ -186,7 +178,6 @@ export default class CommandRegistry {
         return;
       }
       if (command.adminOnly && !messageContext.isAdmin) {
-        await messageContext.reply('❌ This command is for admins only.');
         return;
       }
       if (command.groupOnly && !messageContext.isGroup) {
