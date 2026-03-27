@@ -12,6 +12,7 @@ import path from 'path';
 import pendingActions from '../utils/pendingActions.js';
 import memoryStore from '../utils/memory.js';
 import { getOwnerJidFromConfig } from '../utils/whatsappJid.js';
+import { getKnownContacts } from '../utils/knownEntities.js';
 
 const RESTART_NOTICE_PATH = path.resolve(process.cwd(), '.restart_notice');
 
@@ -136,6 +137,20 @@ export default class Bot extends EventEmitter {
       const latestOwnerMessage = memoryStore.getLatestMessage('whatsapp', ownerJid);
       if (latestOwnerMessage?.pushName) {
         return latestOwnerMessage.pushName;
+      }
+    } catch {}
+    try {
+      const contacts = getKnownContacts();
+      if (contacts?.[ownerJid]) {
+        const entry = contacts[ownerJid];
+        return entry.name || entry.notify || entry.verifiedName || entry.short || fallback;
+      }
+      const ownerDigits = String(ownerJid || fallback).replace(/[^\d]/g, '');
+      for (const [jid, entry] of Object.entries(contacts || {})) {
+        const digits = String(jid || '').replace(/[^\d]/g, '');
+        if (digits && ownerDigits && digits === ownerDigits) {
+          return entry.name || entry.notify || entry.verifiedName || entry.short || fallback;
+        }
       }
     } catch {}
     return fallback;
