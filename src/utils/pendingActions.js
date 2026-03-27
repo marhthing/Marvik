@@ -61,6 +61,8 @@ class PendingActions {
   async handle(ctx) {
     // Get message text (MessageContext uses 'text' not 'body')
     const messageText = ctx.text || '';
+    const normalizedText = messageText.toLowerCase().trim();
+    const isJoinMessage = normalizedText === 'join';
     
     // Support both extendedTextMessage.contextInfo.stanzaId and messageContextInfo.stanzaId
     let replyTo = ctx.raw?.message?.extendedTextMessage?.contextInfo?.stanzaId;
@@ -83,26 +85,43 @@ class PendingActions {
     // 1. Try quoted/reply-based matching first
     if (replyTo && this.actions[chatId]?.[replyTo]) {
       const pending = this.actions[chatId][replyTo];
-      console.log('[pendingActions] found pending by replyTo', { pendingId: replyTo, type: pending.type });
+      const isJoinPending = typeof pending?.type === 'string' && pending.type.endsWith('_join');
+      // If user typed "join" while replying to a non-join pending action, don't consume it here.
+      // Let fallback routing pick the actual game join action.
+      if (isJoinMessage && !isJoinPending) {
+      } else
       // Only allow the user who started the action
       if (pending.userId && ctx.senderId && !ctx.isFromMe) {
         const pendingUserBase = this.normalizeUserId(pending.userId);
         const senderBase = this.normalizeUserId(ctx.senderId);
         if (pendingUserBase !== senderBase) {
-          console.log('[pendingActions] senderId mismatch', { senderId: ctx.senderId, expected: pending.userId });
+          // Don't consume this message; allow fallback matching for other pending actions in chat.
+        } else {
+          // Match logic (can be custom or default)
+          if (pending.match && !pending.match(messageText, ctx, pending)) {
+            // Don't consume this message; allow fallback matching.
+          } else {
+            const result = pending.handler ? await pending.handler(ctx, pending) : true;
+            if (result === true) {
+              this.delete(chatId, replyTo);
+              return true;
+            }
+            return false;
+          }
+        }
+      } else {
+        // Match logic (can be custom or default)
+        if (pending.match && !pending.match(messageText, ctx, pending)) {
+          // Don't consume this message; allow fallback matching.
+        } else {
+          const result = pending.handler ? await pending.handler(ctx, pending) : true;
+          if (result === true) {
+            this.delete(chatId, replyTo);
+            return true;
+          }
           return false;
         }
       }
-      // Match logic (can be custom or default)
-      if (pending.match && !pending.match(messageText, ctx, pending)) {
-        console.log('[pendingActions] match failed', { messageText });
-        return true;
-      }
-      console.log('[pendingActions] calling handler');
-      if (pending.handler) await pending.handler(ctx, pending);
-      this.delete(chatId, replyTo);
-      console.log('[pendingActions] action complete and deleted');
-      return true;
     }
     
     // 2. Fallback: match most recent pending action for this chat (user doesn't need to quote)
@@ -114,9 +133,23 @@ class PendingActions {
     }
 
     if (pendings.length > 0) {
+      // For "join", prioritize game join actions to avoid unrelated pending flows swallowing it.
+      if (isJoinMessage) {
+        pendings.sort((a, b) => {
+          const aJoin = typeof a[1]?.type === 'string' && a[1].type.endsWith('_join');
+          const bJoin = typeof b[1]?.type === 'string' && b[1].type.endsWith('_join');
+          if (aJoin && !bJoin) return -1;
+          if (!aJoin && bJoin) return 1;
+          return b[1].created - a[1].created;
+        });
+      } else {
       // Sort by created time descending (most recent first)
-      pendings.sort((a, b) => b[1].created - a[1].created);
+        pendings.sort((a, b) => b[1].created - a[1].created);
+      }
       for (const [pendingId, pending] of pendings) {
+        if (isJoinMessage && !(typeof pending?.type === 'string' && pending.type.endsWith('_join'))) {
+          continue;
+        }
         // Skip if different user
         if (pending.userId && ctx.senderId && !ctx.isFromMe) {
           const pendingUserBase = this.normalizeUserId(pending.userId);
@@ -125,12 +158,10 @@ class PendingActions {
         }
         // Check if message matches
         if (pending.match && !pending.match(messageText, ctx, pending)) continue;
-        console.log('[pendingActions] fallback matched pending', { pendingId, type: pending.type });
         if (pending.handler) {
           const result = await pending.handler(ctx, pending);
           if (result === true) {
             this.delete(this.actions[chatId]?.[pendingId] ? chatId : 'system_global', pendingId);
-            console.log('[pendingActions] fallback action complete and deleted');
             return true;
           }
         }

@@ -5,7 +5,7 @@
 export default class MessageContext {
   constructor(data, adapter) {
     // Core identification
-    this.platform = data.platform; // 'whatsapp' | 'telegram'
+    this.platform = data.platform;
     this.messageId = data.messageId;
     this.messageKey = data.messageKey; // Store full message key
     this.chatId = data.chatId;
@@ -50,8 +50,8 @@ export default class MessageContext {
    */
   async reply(text, options = {}) {
     return await this._adapter.sendMessage(this.chatId, text, {
-      ...options,
-      quoted: this.messageId
+      quoted: this.raw || this.messageKey || this.messageId,
+      ...options
     });
   }
 
@@ -92,7 +92,8 @@ export default class MessageContext {
    * Send media (image, video, audio, document)
    */
   async sendMedia(media, options = {}) {
-    return await this._adapter.sendMedia(this.chatId, media, options);
+    const mediaType = options.type || options.mediaType || options.kind;
+    return await this._adapter.sendMedia(this.chatId, media, mediaType, options);
   }
 
   /**

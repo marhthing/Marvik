@@ -1,7 +1,7 @@
 {
   "name": "matbot",
   "version": "2.0.0",
-  "description": "Universal bot for WhatsApp and Telegram with modular plugin system",
+  "description": "WhatsApp bot with a modular plugin system",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -11,9 +11,8 @@
   },
   "keywords": [
     "whatsapp",
-    "telegram",
     "bot",
-    "multi-platform"
+    "modular"
   ],
   "author": "MATDEV",
   "license": "MIT",
@@ -24,13 +23,13 @@
     "@tobyg74/tiktok-api-dl": "^1.3.7",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "@xaviabot/fb-downloader": "^1.0.14",
-    "axios": "^1.13.2",
+    "axios": "^1.13.6",
     "cheerio": "^1.2.0",
     "dotenv": "^16.6.1",
     "fb-downloader-scrapper": "^3.0.1",
     "fbvideos": "^1.0.2",
     "fluent-ffmpeg": "^2.1.3",
-    "fs-extra": "^11.3.3",
+    "fs-extra": "^11.3.4",
     "groq-sdk": "^0.37.0",
     "https-proxy-agent": "^7.0.6",
     "instagram-url-direct": "^2.0.7",
@@ -39,12 +38,11 @@
     "pino-pretty": "^11.3.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",
-    "sharp": "^0.34.5",
-    "telegraf": "^4.16.3",
+    "sharp": "^0.32.6",
     "tmp": "^0.2.5",
     "twitter-downloader": "^1.1.8",
     "wa-sticker-formatter": "^4.4.4",
-    "youtube-dl-exec": "^3.0.29"
+    "youtube-dl-exec": "^3.1.4"
   },
   "engines": {
     "node": ">=18.0.0"

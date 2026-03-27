@@ -1,34 +1,5 @@
-import fs from 'fs';
-import path from 'path';
-
-const ENV_PATH = path.resolve(process.cwd(), '.env');
+import { readEnvObject, setEnvValue, removeEnvValue } from '../utils/envStore.js';
 const EXCLUDED_KEYS = ['BOT_NAME', 'LOG_LEVEL', 'OWNER_NUMBER'];
-
-function readEnvFile() {
-  if (!fs.existsSync(ENV_PATH)) return '';
-  return fs.readFileSync(ENV_PATH, 'utf-8');
-}
-
-function parseEnv(content) {
-  const lines = content.split(/\r?\n/);
-  const env = {};
-  for (const line of lines) {
-    if (!line.trim() || line.trim().startsWith('#')) continue;
-    const match = line.match(/^([A-Za-z0-9_]+)=(.*)$/);
-    if (match) {
-      env[match[1]] = match[2];
-    }
-  }
-  return env;
-}
-
-function writeEnvFile(envObj) {
-  let lines = ['# Bot Configuration'];
-  for (const [key, value] of Object.entries(envObj)) {
-    lines.push(`${key}=${value}`);
-  }
-  fs.writeFileSync(ENV_PATH, lines.join('\n'), 'utf-8');
-}
 
 export default {
   name: 'env',
@@ -40,11 +11,14 @@ export default {
       name: 'env',
       description: 'Manage .env variables',
       usage: '.env add VAR=VALUE | .env del VAR | .env list',
+      category: 'owner',
       ownerOnly: true,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         const [subcmd, ...rest] = ctx.args;
-        let envContent = readEnvFile();
-        let envObj = parseEnv(envContent);
+        let envObj = readEnvObject();
         
         // .env list
         if (!subcmd || subcmd === 'list') {
@@ -60,7 +34,7 @@ export default {
         // .env add VAR=VALUE
         if (subcmd === 'add') {
           // Get the raw text after ".env add " to preserve spaces
-          const rawText = ctx.text || ctx.body || '';
+          const rawText = ctx.text || '';
           const prefix = ctx.prefix || '.';
           
           // Extract everything after ".env add "
@@ -93,8 +67,7 @@ export default {
             return;
           }
           
-          envObj[key] = value;
-          writeEnvFile(envObj);
+          setEnvValue(key, value);
           await ctx.reply(`✅ Updated .env: ${key}=${value}`);
           return;
         }
@@ -107,8 +80,7 @@ export default {
             return;
           }
           if (envObj[key] !== undefined) {
-            delete envObj[key];
-            writeEnvFile(envObj);
+            removeEnvValue(key);
             await ctx.reply(`✅ Deleted .env variable: ${key}`);
           } else {
             await ctx.reply(`❌ Variable ${key} not found in .env.`);

@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 import envMemory from '../utils/envMemory.js';
 import { shouldReact } from '../utils/pendingActions.js';
+import { getQuotedStickerTarget } from '../utils/quotedMedia.js';
+import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
 export default {
   name: 'take',
@@ -20,49 +22,22 @@ export default {
       groupOnly: false,
       cooldown: 5,
       async execute(ctx) {
-        // Helper to extract sticker from quoted message
-        function extractSticker(ctx) {
-          // Quoted sticker - need to reconstruct full message object
-          const extMsg = ctx.raw?.message?.extendedTextMessage;
-          const quotedMsg = extMsg?.contextInfo?.quotedMessage;
-          
-          if (quotedMsg && quotedMsg.stickerMessage) {
-            // Reconstruct the full WAMessage object that downloadMediaMessage expects
-            const reconstructedMsg = {
-              key: {
-                remoteJid: ctx.chatId,
-                id: extMsg.contextInfo.stanzaId,
-                participant: extMsg.contextInfo.participant,
-                fromMe: false
-              },
-              message: {
-                stickerMessage: quotedMsg.stickerMessage
-              }
-            };
-            
-            return reconstructedMsg;
-          }
-
-          return null;
-        }
-
-        const stickerMsg = extractSticker(ctx);
+        const stickerTarget = getQuotedStickerTarget(ctx);
         
-        if (!stickerMsg) {
+        if (!stickerTarget) {
           return await ctx.reply('❌ Please reply to a sticker to change its metadata.');
         }
 
         // Download the sticker buffer
         let buffer;
         try {
-          buffer = await ctx._adapter.downloadMedia({ raw: stickerMsg });
-          
-          if (!buffer || buffer.length === 0) {
-            throw new Error('Empty buffer');
-          }
+          buffer = await downloadMediaBuffer(ctx, stickerTarget);
         } catch (e) {
-          // console.error('Download sticker error:', e);
           return await ctx.reply('❌ Failed to download sticker. The sticker might have been deleted from WhatsApp servers.');
+        }
+
+        if (!hasValidMediaHeader(buffer)) {
+          return await ctx.reply('❌ The downloaded sticker appears corrupted or unsupported.');
         }
 
         // Import wa-sticker-formatter

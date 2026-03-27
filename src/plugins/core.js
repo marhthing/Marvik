@@ -244,16 +244,18 @@ export default {
       }
     }
   ],
-  async init(ctx) {
+  async onLoad(bot) {
     const RESTART_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
     console.log(`[Core] Auto-restart scheduled every 6 hours.`);
-    setInterval(async () => {
+    const restartTimer = setInterval(async () => {
       console.log('[Core] Auto-restart triggered.');
-      if (ctx && ctx.bot && typeof ctx.bot.restart === 'function') {
-        await ctx.bot.restart();
+      if (bot && typeof bot.restart === 'function') {
+        await bot.restart();
       } else {
         process.exit(0);
       }
     }, RESTART_INTERVAL);
+
+    return () => clearInterval(restartTimer);
   }
 };

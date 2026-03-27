@@ -28,37 +28,5 @@ export default {
       voiceMessages: true,
       statusReplies: false
     }
-  },
-
-  telegram: {
-    // Bot settings
-    polling: {
-      interval: 300,
-      timeout: 30,
-      limit: 100
-    },
-    
-    // Message settings
-    parseMode: 'Markdown', // 'Markdown' or 'HTML'
-    disableWebPagePreview: false,
-    
-    // Media settings
-    maxMediaSize: 50 * 1024 * 1024, // 50MB
-    downloadTimeout: 30000, // 30 seconds
-    
-    // Features
-    features: {
-      inlineKeyboards: true,
-      botCommands: true,
-      webhooks: false, // Use polling by default
-      channelPosts: false
-    },
-    
-    // Webhook config (if enabled)
-    webhook: {
-      domain: '',
-      port: 8443,
-      path: '/telegram-webhook'
-    }
   }
 };

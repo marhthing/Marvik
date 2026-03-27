@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 import envMemory from '../utils/envMemory.js';
 import { shouldReact } from '../utils/pendingActions.js';
+import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
+import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
 export default {
   name: 'sticker',
@@ -20,55 +22,7 @@ export default {
       groupOnly: false,
       cooldown: 5,
       async execute(ctx) {
-        // Helper to extract media from context or quoted message
-        function extractMedia(ctx) {
-          // Direct media (user sent media with command)
-          if (ctx.media && ['image', 'video', 'gif'].includes(ctx.media.type)) {
-            return { mediaMsg: ctx.raw, type: ctx.media.type };
-          }
-
-          // Quoted media - need to reconstruct full message object
-          const extMsg = ctx.raw?.message?.extendedTextMessage;
-          const quotedMsg = extMsg?.contextInfo?.quotedMessage;
-          
-          if (quotedMsg) {
-            // Determine media type
-            let type = null;
-            let mediaMessage = null;
-
-            if (quotedMsg.imageMessage) {
-              type = 'image';
-              mediaMessage = quotedMsg.imageMessage;
-            } else if (quotedMsg.videoMessage) {
-              type = quotedMsg.videoMessage.gifPlayback ? 'gif' : 'video';
-              mediaMessage = quotedMsg.videoMessage;
-            } else if (quotedMsg.stickerMessage) {
-              type = 'sticker';
-              mediaMessage = quotedMsg.stickerMessage;
-            }
-
-            if (type && mediaMessage) {
-              // Reconstruct the full WAMessage object that downloadMediaMessage expects
-              const reconstructedMsg = {
-                key: {
-                  remoteJid: ctx.chatId,
-                  id: extMsg.contextInfo.stanzaId,
-                  participant: extMsg.contextInfo.participant,
-                  fromMe: false
-                },
-                message: {
-                  [type + 'Message']: mediaMessage
-                }
-              };
-              
-              return { mediaMsg: reconstructedMsg, type };
-            }
-          }
-
-          return null;
-        }
-
-        const media = extractMedia(ctx);
+        const media = getQuotedMediaTarget(ctx, ['image', 'video', 'gif', 'sticker']);
         
         if (!media || !['image', 'video', 'gif', 'sticker'].includes(media.type)) {
           return await ctx.reply('❌ Please reply to an image, video, or gif to convert it to a sticker.');
@@ -77,14 +31,21 @@ export default {
         // Download the media buffer
         let buffer;
         try {
-          buffer = await ctx._adapter.downloadMedia({ raw: media.mediaMsg });
-          
-          if (!buffer || buffer.length === 0) {
-            throw new Error('Empty buffer');
-          }
+          buffer = await downloadMediaBuffer(ctx, media);
         } catch (e) {
-          // console.error('Download media error:', e);
+          console.error('[sticker] download error', e?.message || e, e?.stack || '');
           return await ctx.reply('❌ Failed to download media. The media might have been deleted from WhatsApp servers.');
+        }
+
+        if (!hasValidMediaHeader(buffer) && media.type === 'image') {
+          const sig = buffer?.slice(0, 16);
+          console.error('[sticker] invalid header', {
+            type: media.type,
+            mimetype: media.media?.mimetype,
+            size: buffer?.length,
+            head: sig ? sig.toString('hex') : null
+          });
+          return await ctx.reply('❌ The downloaded image appears corrupted or unsupported.');
         }
 
         // Import wa-sticker-formatter
@@ -107,7 +68,7 @@ export default {
         const stickerAuthor = envMemory.get('STICKER_AUTHOR') || config.stickerAuthor || 'Bot';
 
         // Send processing indicator
-        if (shouldReact()) await ctx.react('⏳');
+        if (shouldReact()) await ctx.react('?');
 
         // Create sticker with optimized settings
         try {
@@ -116,19 +77,34 @@ export default {
             author: stickerAuthor,
             type: StickerTypes.DEFAULT, // Faster than FULL
             quality: 30, // Lower quality = faster processing (30-60 range)
-            categories: ['🤖'],
+            categories: ['??'],
           });
           
           const stickerBuffer = await sticker.toBuffer();
           
           // Remove processing indicator
-          if (shouldReact()) await ctx.react('✅');
+          if (shouldReact()) await ctx.react('?');
           
           await ctx._adapter.sendMedia(ctx.chatId, stickerBuffer, { type: 'sticker' });
         } catch (e) {
-          if (shouldReact()) await ctx.react('❌');
-          // console.error('Create sticker error:', e);
-          await ctx.reply('❌ Failed to create sticker. Make sure the media is a valid image or video.');
+          console.error('[sticker] Create sticker error:', e?.message || e, e?.stack || '');
+          try {
+            const sticker = new Sticker(buffer, {
+              pack: stickerPack,
+              author: stickerAuthor,
+              type: StickerTypes.FULL,
+              quality: 50,
+              categories: ['??']
+            });
+            const stickerBuffer = await sticker.toBuffer();
+            if (shouldReact()) await ctx.react('?');
+            await ctx._adapter.sendMedia(ctx.chatId, stickerBuffer, { type: 'sticker' });
+            return;
+          } catch (e2) {
+            console.error('[sticker] Create sticker FULL error:', e2?.message || e2, e2?.stack || '');
+          }
+          if (shouldReact()) await ctx.react('?');
+          await ctx.reply(`❌ Failed to create sticker. ${e?.message ? `Error: ${e.message}` : 'Make sure the media is a valid image or video.'}`);
         }
       }
     },
@@ -139,7 +115,8 @@ export default {
       category: 'media',
       ownerOnly: true,
       async execute(ctx) {
-        if (!ctx.quoted || ctx.quoted.type !== 'sticker') {
+        const stickerTarget = getQuotedMediaTarget(ctx, ['sticker']);
+        if (!stickerTarget) {
           return await ctx.reply('❌ Please reply to a sticker to bind a command to it.');
         }
 
@@ -148,7 +125,7 @@ export default {
           return await ctx.reply(`❌ Please specify the command to bind. Usage: ${this.usage}`);
         }
 
-        const stickerMessage = ctx.quoted.message.stickerMessage;
+        const stickerMessage = stickerTarget.media;
         const fileSha256 = stickerMessage.fileSha256;
         
         if (!fileSha256) {
@@ -172,11 +149,12 @@ export default {
       category: 'media',
       ownerOnly: true,
       async execute(ctx) {
-        if (!ctx.quoted || ctx.quoted.type !== 'sticker') {
+        const stickerTarget = getQuotedMediaTarget(ctx, ['sticker']);
+        if (!stickerTarget) {
           return await ctx.reply('❌ Please reply to a sticker to unbind its command.');
         }
 
-        const stickerMessage = ctx.quoted.message.stickerMessage;
+        const stickerMessage = stickerTarget.media;
         const fileSha256 = stickerMessage.fileSha256;
         
         if (!fileSha256) {

@@ -1,0 +1,49 @@
+<svg width="1200" height="1200" viewBox="0 0 1200 1200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#09111f"/>
+      <stop offset="55%" stop-color="#11233d"/>
+      <stop offset="100%" stop-color="#1c4f62"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f7b24d"/>
+      <stop offset="100%" stop-color="#ff7b54"/>
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1200" height="1200" rx="280" fill="url(#bg)"/>
+  <circle cx="948" cy="260" r="120" fill="#ffd98b" opacity="0.18"/>
+  <circle cx="260" cy="960" r="160" fill="#4dd0c8" opacity="0.12"/>
+
+  <g transform="translate(180 155)">
+    <path d="M420 0C613 0 760 147 760 340V474C760 667 613 814 420 814C227 814 80 667 80 474V340C80 147 227 0 420 0Z" fill="#07101d" stroke="#7ee0d6" stroke-width="26"/>
+    <path d="M420 48C584 48 712 176 712 340V470C712 634 584 766 420 766C256 766 128 634 128 470V340C128 176 256 48 420 48Z" fill="#0f1d31"/>
+
+    <rect x="168" y="208" width="504" height="276" rx="138" fill="#09111f" stroke="#f7b24d" stroke-width="22"/>
+    <circle cx="296" cy="346" r="74" fill="url(#glass)" filter="url(#glow)"/>
+    <circle cx="544" cy="346" r="74" fill="url(#glass)" filter="url(#glow)"/>
+    <circle cx="274" cy="324" r="18" fill="#fff4d6" opacity="0.9"/>
+    <circle cx="522" cy="324" r="18" fill="#fff4d6" opacity="0.9"/>
+
+    <path d="M306 560C374 620 466 620 534 560" fill="none" stroke="#7ee0d6" stroke-width="28" stroke-linecap="round"/>
+    <rect x="362" y="104" width="116" height="84" rx="28" fill="#7ee0d6"/>
+    <rect x="404" y="40" width="32" height="108" rx="16" fill="#7ee0d6"/>
+
+    <path d="M146 264L58 206" fill="none" stroke="#7ee0d6" stroke-width="24" stroke-linecap="round"/>
+    <path d="M694 264L782 206" fill="none" stroke="#7ee0d6" stroke-width="24" stroke-linecap="round"/>
+    <path d="M188 656L108 736" fill="none" stroke="#7ee0d6" stroke-width="22" stroke-linecap="round"/>
+    <path d="M652 656L732 736" fill="none" stroke="#7ee0d6" stroke-width="22" stroke-linecap="round"/>
+  </g>
+
+  <g font-family="Arial, Helvetica, sans-serif" text-anchor="middle">
+    <text x="600" y="1070" font-size="126" font-weight="700" fill="#eff7ff" letter-spacing="18">MATBOT</text>
+    <text x="600" y="1136" font-size="34" fill="#7ee0d6" letter-spacing="10">WHATSAPP AUTOMATION CORE</text>
+  </g>
+</svg>

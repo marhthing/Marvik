@@ -252,24 +252,6 @@ export default class Validator {
       };
     }
     
-    if (platform === 'telegram') {
-      // Telegram format: @username or user ID
-      if (mention.startsWith('@')) {
-        return {
-          valid: mention.length > 1,
-          value: mention.substring(1),
-          message: mention.length > 1 ? '' : '❌ Invalid Telegram username'
-        };
-      }
-      
-      const userId = Number(mention);
-      return {
-        valid: !isNaN(userId),
-        value: userId,
-        message: !isNaN(userId) ? '' : '❌ Invalid Telegram user ID'
-      };
-    }
-    
     return {
       valid: false,
       message: '❌ Unsupported platform'

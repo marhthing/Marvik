@@ -2,6 +2,8 @@ import dotenv from 'dotenv';
 dotenv.config();
 import envMemory from '../utils/envMemory.js';
 import { shouldReact } from '../utils/pendingActions.js';
+import { getQuotedStickerTarget } from '../utils/quotedMedia.js';
+import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
 export default {
   name: 'stickerconvert',
@@ -14,33 +16,18 @@ export default {
       description: 'Convert sticker to image',
       usage: '.img (reply to sticker)',
       category: 'media',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
-        function extractSticker(ctx) {
-          const extMsg = ctx.raw?.message?.extendedTextMessage;
-          const quotedMsg = extMsg?.contextInfo?.quotedMessage;
-          if (quotedMsg && quotedMsg.stickerMessage) {
-            const reconstructedMsg = {
-              key: {
-                remoteJid: ctx.chatId,
-                id: extMsg.contextInfo.stanzaId,
-                participant: extMsg.contextInfo.participant,
-                fromMe: false
-              },
-              message: {
-                stickerMessage: quotedMsg.stickerMessage
-              }
-            };
-            return reconstructedMsg;
-          }
-          return null;
-        }
-        const stickerMsg = extractSticker(ctx);
-        if (!stickerMsg) {
+        const stickerTarget = getQuotedStickerTarget(ctx);
+        if (!stickerTarget) {
           return await ctx.reply('❌ Please reply to a sticker to convert.');
         }
         let buffer;
         try {
-          buffer = await ctx._adapter.downloadMedia({ raw: stickerMsg });
+          buffer = await ctx._adapter.downloadMedia({ raw: stickerTarget.raw });
           if (!buffer || buffer.length === 0) throw new Error('Empty buffer');
         } catch (e) {
           return await ctx.reply('❌ Failed to download sticker.');
@@ -67,33 +54,18 @@ export default {
       description: 'Convert animated sticker to video or gif',
       usage: '.vid (reply to sticker)',
       category: 'media',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
-        function extractSticker(ctx) {
-          const extMsg = ctx.raw?.message?.extendedTextMessage;
-          const quotedMsg = extMsg?.contextInfo?.quotedMessage;
-          if (quotedMsg && quotedMsg.stickerMessage) {
-            const reconstructedMsg = {
-              key: {
-                remoteJid: ctx.chatId,
-                id: extMsg.contextInfo.stanzaId,
-                participant: extMsg.contextInfo.participant,
-                fromMe: false
-              },
-              message: {
-                stickerMessage: quotedMsg.stickerMessage
-              }
-            };
-            return reconstructedMsg;
-          }
-          return null;
-        }
-        const stickerMsg = extractSticker(ctx);
-        if (!stickerMsg) {
+        const stickerTarget = getQuotedStickerTarget(ctx);
+        if (!stickerTarget) {
           return await ctx.reply('❌ Please reply to a sticker to convert.');
         }
         let buffer;
         try {
-          buffer = await ctx._adapter.downloadMedia({ raw: stickerMsg });
+          buffer = await ctx._adapter.downloadMedia({ raw: stickerTarget.raw });
           if (!buffer || buffer.length === 0) throw new Error('Empty buffer');
         } catch (e) {
           return await ctx.reply('❌ Failed to download sticker.');

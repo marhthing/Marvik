@@ -1,80 +1,224 @@
 import memoryStore from '../utils/memory.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
-import fs from 'fs';
-import path from 'path';
+import { getBooleanEnv, setEnvValue } from '../utils/envStore.js';
+import { getStorageSection, patchStorageSection } from '../utils/storageStore.js';
+import {
+  applyDestinationCommand,
+  normalizeDestinationConfig,
+  normalizeDirectJid,
+  normalizeJidList,
+  resolveDestinationJid
+} from '../utils/destinationRouter.js';
 
-const STORAGE_PATH = path.join(process.cwd(), 'storage', 'storage.json');
-const ENV_PATH = path.join(process.cwd(), '.env');
+const STATUS_ANTIDELETE_DEFAULT = {
+  dest: 'owner',
+  jid: null,
+  scope: 'all',
+  only: [],
+  except: []
+};
 
 function getAntideleteConfig() {
-  let config = { dest: 'owner', jid: null };
-  try {
-    const raw = fs.readFileSync(STORAGE_PATH, 'utf8');
-    const json = JSON.parse(raw.replace(/^\/\/.*$/mg, ''));
-    if (json.antidelete) config = { ...config, ...json.antidelete };
-  } catch {}
-  return config;
-}
-function setAntideleteConfig(newConfig) {
-  let json = {};
-  try {
-    const raw = fs.readFileSync(STORAGE_PATH, 'utf8');
-    json = JSON.parse(raw.replace(/^\/\/.*$/mg, ''));
-  } catch {}
-  json.antidelete = { ...json.antidelete, ...newConfig };
-  fs.writeFileSync(STORAGE_PATH, JSON.stringify(json, null, 2));
-}
-function setAntideleteEnabled(enabled) {
-  let env = fs.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/);
-  let found = false;
-  env = env.map(line => {
-    if (line.startsWith('ANTIDELETE_ENABLED=')) {
-      found = true;
-      return `ANTIDELETE_ENABLED=${enabled ? 'on' : 'off'}`;
-    }
-    return line;
-  });
-  if (!found) env.push(`ANTIDELETE_ENABLED=${enabled ? 'on' : 'off'}`);
-  fs.writeFileSync(ENV_PATH, env.join('\n'));
-}
-function getAntideleteEnabled() {
-  try {
-    const env = fs.readFileSync(ENV_PATH, 'utf8');
-    const match = env.match(/^ANTIDELETE_ENABLED=(on|off)/m);
-    return !match || match[1] === 'on';
-  } catch { return true; }
+  return getStorageSection('antidelete', { dest: 'owner', jid: null });
 }
 
-// Deduplication tracking
+function setAntideleteConfig(newConfig) {
+  return patchStorageSection('antidelete', newConfig, { dest: 'owner', jid: null });
+}
+
+function setAntideleteEnabled(enabled) {
+  setEnvValue('ANTIDELETE_ENABLED', enabled ? 'on' : 'off');
+}
+
+function getAntideleteEnabled() {
+  return getBooleanEnv('ANTIDELETE_ENABLED', true);
+}
+
+function getStatusAntideleteConfig() {
+  const config = normalizeDestinationConfig(getStorageSection('statusantidelete', STATUS_ANTIDELETE_DEFAULT));
+  return {
+    dest: config.dest === 'custom' ? 'custom' : 'owner',
+    jid: config.dest === 'custom' ? config.jid : null,
+    scope: ['all', 'only', 'except'].includes(config.scope) ? config.scope : 'all',
+    only: normalizeJidList(config.only),
+    except: normalizeJidList(config.except)
+  };
+}
+
+function setStatusAntideleteConfig(newConfig) {
+  const current = getStatusAntideleteConfig();
+  const next = {
+    ...current,
+    ...newConfig
+  };
+
+  next.dest = next.dest === 'custom' ? 'custom' : 'owner';
+  next.jid = next.dest === 'custom' ? normalizeDirectJid(next.jid) : null;
+  next.scope = ['all', 'only', 'except'].includes(next.scope) ? next.scope : 'all';
+  next.only = normalizeJidList(next.only);
+  next.except = normalizeJidList(next.except);
+
+  if (next.scope !== 'only') next.only = [];
+  if (next.scope !== 'except') next.except = [];
+
+  return patchStorageSection('statusantidelete', next, STATUS_ANTIDELETE_DEFAULT);
+}
+
+function getStatusAntideleteEnabled() {
+  return getBooleanEnv('STATUSANTIDELETE_ENABLED', false);
+}
+
+function setStatusAntideleteEnabled(enabled) {
+  setEnvValue('STATUSANTIDELETE_ENABLED', enabled ? 'true' : 'false');
+}
+
+function parseStatusSenderList(input) {
+  return normalizeJidList(String(input || '').split(','));
+}
+
+function shouldTrackStatusSender(senderJid, config) {
+  const normalizedSender = normalizeDirectJid(senderJid);
+  if (!normalizedSender) return false;
+  if (config.scope === 'only') {
+    return config.only.includes(normalizedSender);
+  }
+  if (config.scope === 'except') {
+    return !config.except.includes(normalizedSender);
+  }
+  return true;
+}
+
+function formatStatusAntideleteSummary() {
+  const enabled = getStatusAntideleteEnabled();
+  const conf = getStatusAntideleteConfig();
+  const destination = conf.dest === 'custom' ? conf.jid : 'owner';
+  let scopeLine = 'All status senders';
+  if (conf.scope === 'only') {
+    scopeLine = conf.only.length ? `Only: ${conf.only.join(', ')}` : 'Only: none configured';
+  } else if (conf.scope === 'except') {
+    scopeLine = conf.except.length ? `Except: ${conf.except.join(', ')}` : 'Except: none configured';
+  }
+
+  return [
+    `Status delete recovery is ${enabled ? 'ON' : 'OFF'}`,
+    `Destination: ${destination}`,
+    `Scope: ${scopeLine}`,
+    '',
+    'Usage:',
+    '.antistatusdelete on',
+    '.antistatusdelete off',
+    '.antistatusdelete all',
+    '.antistatusdelete only <jid>,<jid>',
+    '.antistatusdelete except <jid>,<jid>',
+    '.antistatusdelete to owner',
+    '.antistatusdelete to <jid>'
+  ].join('\n');
+}
+
+function resolveAntideleteDestination(ownerJid, conf, fallbackJid = ownerJid) {
+  return resolveDestinationJid({ chatId: fallbackJid }, conf, ownerJid || fallbackJid);
+}
+
+function extractMessageBody(msg) {
+  return msg?.conversation ||
+    msg?.extendedTextMessage?.text ||
+    msg?.imageMessage?.caption ||
+    msg?.videoMessage?.caption ||
+    msg?.documentMessage?.caption ||
+    msg?.buttonsResponseMessage?.selectedDisplayText ||
+    msg?.listResponseMessage?.title ||
+    msg?.templateButtonReplyMessage?.selectedDisplayText ||
+    msg?.buttonsMessage?.contentText ||
+    msg?.listMessage?.description ||
+    msg?.pollCreationMessage?.name ||
+    msg?.interactiveMessage?.body?.text ||
+    '';
+}
+
+function extractMediaType(msg) {
+  const mediaTypes = [
+    'imageMessage',
+    'videoMessage',
+    'audioMessage',
+    'documentMessage',
+    'stickerMessage',
+    'contactMessage',
+    'locationMessage',
+    'liveLocationMessage',
+    'pttMessage'
+  ];
+
+  for (const type of mediaTypes) {
+    if (msg?.[type]) return type.replace('Message', '');
+  }
+  return null;
+}
+
+async function sendRecoveredMedia(whatsappAdapter, sourceMessage, chatId, deletedMessageId, mediaType, actualMsg, destJid, sentNotif, logPrefix) {
+  let buffer = null;
+
+  try {
+    buffer = await downloadMediaMessage(
+      sourceMessage,
+      'buffer',
+      {},
+      {
+        logger: whatsappAdapter.baileysLogger,
+        reuploadRequest: whatsappAdapter.client.updateMediaMessage
+      }
+    );
+  } catch {}
+
+  if (!buffer) {
+    try {
+      buffer = memoryStore.getMediaFromDisk('whatsapp', chatId, deletedMessageId);
+    } catch {}
+  }
+
+  if (!buffer) {
+    console.error(`[${logPrefix}] Failed to recover media: not available from server or disk`);
+    return;
+  }
+
+  try {
+    const messageType = `${mediaType}Message`;
+    const mimetype = actualMsg?.[messageType]?.mimetype || 'application/octet-stream';
+    await whatsappAdapter.client.sendMessage(
+      destJid,
+      {
+        [mediaType]: buffer,
+        caption: mediaType !== 'sticker' ? `Deleted ${logPrefix === 'statusantidelete' ? 'status ' : ''}${mediaType}` : undefined,
+        mimetype,
+        ptt: mediaType === 'ptt'
+      },
+      { quoted: sentNotif }
+    );
+  } catch (error) {
+    console.error(`[${logPrefix}] Failed to send recovered media:`, error.message);
+  }
+}
+
 const processedDeletes = new Map();
 const processingDeletes = new Set();
-const deletionQueue = []; // 🔥 NEW: Queue for processing deletions one by one
-let isProcessingQueue = false; // 🔥 NEW: Flag to track if queue is being processed
-
-// Cache for group metadata to avoid rate limiting
+const deletionQueue = [];
+let isProcessingQueue = false;
 const groupMetadataCache = new Map();
-
-// Cleanup old processed deletes every 5 minutes
-setInterval(() => {
-  const now = Date.now();
-  const cutoff = now - 300000; // 5 minutes
-  for (const [key, timestamp] of processedDeletes.entries()) {
-    if (timestamp < cutoff) {
-      processedDeletes.delete(key);
-    }
-  }
-}, 300000);
 
 export default {
   name: 'antidelete',
-  description: 'Recovers deleted messages and sends them to owner',
-  version: '1.6.0',
+  description: 'Recovers deleted messages and deleted statuses',
+  version: '1.7.0',
   author: 'MATDEV',
   commands: [
     {
       name: 'delete',
       description: 'Configure antidelete destination and state',
       usage: '.delete <jid|g|p|on|off>',
+      category: 'owner',
+      ownerOnly: true,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         const arg = ctx.args[0]?.toLowerCase();
         if (!arg) {
@@ -88,191 +232,155 @@ export default {
           await ctx.reply(`Antidelete ${arg === 'on' ? 'enabled' : 'disabled'}.`);
           return;
         }
-        if (arg === 'g') {
-          setAntideleteConfig({ dest: 'group', jid: null });
-          await ctx.reply('Antidelete will now send deleted messages to the same chat.');
-          return;
-        }
-        if (arg === 'p') {
-          setAntideleteConfig({ dest: 'owner', jid: null });
-          await ctx.reply('Antidelete will now send deleted messages to the owner.');
-          return;
-        }
-        if (/^[0-9a-zA-Z@._-]+$/.test(arg)) {
-          setAntideleteConfig({ dest: 'custom', jid: arg });
-          await ctx.reply(`Antidelete will now send deleted messages to JID: ${arg}`);
+        const response = applyDestinationCommand(arg, setAntideleteConfig, {
+          group: 'Antidelete will now send deleted messages to the same chat.',
+          owner: 'Antidelete will now send deleted messages to the owner.',
+          custom: 'Antidelete will now send deleted messages to JID: %s'
+        });
+        if (response) {
+          await ctx.reply(response);
           return;
         }
         await ctx.reply('Invalid argument. Usage: .delete <jid|g|p|on|off>');
       }
     },
     {
-      name: 'antistatus',
-      description: 'Configure WhatsApp status antidelete destination and state',
-      usage: '.antistatus <jid|g|p|on|off>',
+      name: 'antistatusdelete',
+      aliases: ['antistatus'],
+      description: 'Recover deleted WhatsApp statuses with include/exclude filters',
+      usage: '.antistatusdelete <on|off|all|only|except|to>',
+      category: 'owner',
+      ownerOnly: true,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
-        // Use a separate config section for status
-        const STORAGE_PATH = path.join(process.cwd(), 'storage', 'storage.json');
-        const ENV_PATH = path.join(process.cwd(), '.env');
-        function getStatusConfig() {
-          let config = { dest: 'owner', jid: null };
-          try {
-            const raw = fs.readFileSync(STORAGE_PATH, 'utf8');
-            const json = JSON.parse(raw.replace(/^\/\/.*$/mg, ''));
-            if (json.statusantidelete) config = { ...config, ...json.statusantidelete };
-            if (config.dest !== 'custom') {
-              config.dest = 'owner';
-              config.jid = null;
-            }
-          } catch {}
-          return config;
-        }
-        function setStatusConfig(newConfig) {
-          let json = {};
-          try {
-            const raw = fs.readFileSync(STORAGE_PATH, 'utf8');
-            json = JSON.parse(raw.replace(/^\/\/.*$/mg, ''));
-          } catch {}
-          if (!json.statusantidelete || typeof json.statusantidelete !== 'object') {
-            json.statusantidelete = { dest: 'owner', jid: null };
-          }
-          json.statusantidelete = { ...json.statusantidelete, ...newConfig };
-          fs.writeFileSync(STORAGE_PATH, JSON.stringify(json, null, 2));
-        }
-        function getStatusEnabled() {
-          try {
-            const env = fs.readFileSync(ENV_PATH, 'utf8');
-            const match = env.match(/^STATUSANTIDELETE_ENABLED=(true|on|1|false|off|0)/m);
-            if (!match) return false;
-            return ['true', 'on', '1'].includes(match[1]);
-          } catch { return false; }
-        }
-        function setStatusEnabled(enabled) {
-          let env = fs.readFileSync(ENV_PATH, 'utf8').split(/\r?\n/);
-          let found = false;
-          env = env.map(line => {
-            if (line.startsWith('STATUSANTIDELETE_ENABLED=')) {
-              found = true;
-              return `STATUSANTIDELETE_ENABLED=${enabled ? 'true' : 'false'}`;
-            }
-            return line;
-          });
-          if (!found) env.push(`STATUSANTIDELETE_ENABLED=${enabled ? 'true' : 'false'}`);
-          fs.writeFileSync(ENV_PATH, env.join('\n'));
-        }
-        const arg = ctx.args[0]?.toLowerCase();
-        const conf = getStatusConfig();
-        const enabled = getStatusEnabled();
-        if (!arg) {
-          await ctx.reply(`StatusAntidelete is ${enabled ? 'ON' : 'OFF'}\nDestination: ${conf.dest}${conf.jid ? `\nJID: ${conf.jid}` : ''}`);
+        const action = ctx.args[0]?.toLowerCase();
+
+        if (!action) {
+          await ctx.reply(formatStatusAntideleteSummary());
           return;
         }
-        if (arg === 'on' || arg === 'off') {
-          setStatusEnabled(arg === 'on');
-          await ctx.reply(`StatusAntidelete ${arg === 'on' ? 'enabled' : 'disabled'}.`);
+
+        if (action === 'on' || action === 'off') {
+          setStatusAntideleteEnabled(action === 'on');
+          await ctx.reply(`Status delete recovery ${action === 'on' ? 'enabled' : 'disabled'}.`);
           return;
         }
-        if (arg === 'g') {
-          setStatusConfig({ dest: 'group', jid: null });
-          await ctx.reply('StatusAntidelete will now send deleted statuses to the same chat.');
+
+        if (action === 'all') {
+          setStatusAntideleteConfig({ scope: 'all', only: [], except: [] });
+          await ctx.reply('Status delete recovery will now track all status senders.');
           return;
         }
-        if (arg === 'p') {
-          setStatusConfig({ dest: 'owner', jid: null });
-          await ctx.reply('StatusAntidelete will now send deleted statuses to the owner.');
-          return;
-        }
-        if (/^[0-9a-zA-Z@._-]+$/.test(arg)) {
-          if (arg.endsWith('@status') || arg.endsWith('@broadcast') || arg.endsWith('@g.us')) {
-            await ctx.reply('Group, broadcast, or status JIDs are not allowed as custom destinations.');
+
+        if (action === 'only' || action === 'except') {
+          const listInput = ctx.args.slice(1).join(' ').trim();
+          const parsed = parseStatusSenderList(listInput);
+          if (parsed.length === 0) {
+            await ctx.reply(`Usage: .antistatusdelete ${action} <jid>,<jid>,<jid>`);
             return;
           }
-          setStatusConfig({ dest: 'custom', jid: arg });
-          await ctx.reply(`StatusAntidelete will now send deleted statuses to JID: ${arg}`);
+
+          if (action === 'only') {
+            setStatusAntideleteConfig({ scope: 'only', only: parsed, except: [] });
+            await ctx.reply(`Status delete recovery will only track: ${parsed.join(', ')}`);
+          } else {
+            setStatusAntideleteConfig({ scope: 'except', only: [], except: parsed });
+            await ctx.reply(`Status delete recovery will ignore: ${parsed.join(', ')}`);
+          }
           return;
         }
-        await ctx.reply('Invalid argument. Usage: .antistatus <jid|g|p|on|off>');
+
+        if (action === 'to') {
+          const targetInput = ctx.args.slice(1).join(' ').trim();
+          if (!targetInput) {
+            await ctx.reply('Usage: .antistatusdelete to owner\n.antistatusdelete to <jid>');
+            return;
+          }
+
+          if (targetInput.toLowerCase() === 'owner') {
+            setStatusAntideleteConfig({ dest: 'owner', jid: null });
+            await ctx.reply('Status delete recovery destination set to owner.');
+            return;
+          }
+
+          const jid = normalizeDirectJid(targetInput);
+          if (!jid) {
+            await ctx.reply('Invalid JID. Use a direct user JID or phone number.');
+            return;
+          }
+
+          setStatusAntideleteConfig({ dest: 'custom', jid });
+          await ctx.reply(`Status delete recovery destination set to ${jid}.`);
+          return;
+        }
+
+        await ctx.reply(formatStatusAntideleteSummary());
       }
     }
   ],
-  
+
   async onLoad(bot) {
     const whatsappAdapter = bot.getAdapter('whatsapp');
     if (!whatsappAdapter) return;
-    
+
     const ownerJid = bot.config.ownerNumber ? `${bot.config.ownerNumber}@s.whatsapp.net` : null;
-    
-    if (!ownerJid) {
-      // console.log('[antidelete] No owner number configured, antidelete disabled');
-      return;
-    }
-    
-    // console.log('[antidelete] Plugin loaded, monitoring for deleted messages');
-    
-    // 🔥 NEW: Queue processor function
+    if (!ownerJid) return;
+
+    const cleanupTimer = setInterval(() => {
+      const now = Date.now();
+      const cutoff = now - 300000;
+      for (const [key, timestamp] of processedDeletes.entries()) {
+        if (timestamp < cutoff) {
+          processedDeletes.delete(key);
+        }
+      }
+    }, 300000);
+
     const processQueue = async () => {
       if (isProcessingQueue || deletionQueue.length === 0) return;
-      
       isProcessingQueue = true;
-      
+
       while (deletionQueue.length > 0) {
         const deletion = deletionQueue.shift();
-        
         try {
           await processDeletion(deletion);
-        } catch (err) {
-          console.error('[antidelete] Error processing queued deletion:', err);
+        } catch (error) {
+          console.error('[antidelete] Error processing queued deletion:', error);
         }
-        
-        // Small delay between processing to avoid rate limits
         if (deletionQueue.length > 0) {
           await new Promise(resolve => setTimeout(resolve, 100));
         }
       }
-      
+
       isProcessingQueue = false;
     };
-    
-    // 🔥 NEW: Process a single deletion
+
     const processDeletion = async ({ deletedKey, chatId, deletedMessageId }) => {
       const dedupeKey = `${chatId}|${deletedMessageId}`;
       const now = Date.now();
-      
-      // Check if already processed
-      const lastProcessed = processedDeletes.get(dedupeKey);
-      if (lastProcessed && (now - lastProcessed) < 300000) {
-        // console.log(`[antidelete] Skipping already processed: ${deletedMessageId}`);
+
+      if ((processedDeletes.get(dedupeKey) || 0) + 300000 > now) {
         return;
       }
-      
+
       try {
-        // Check if antidelete is enabled
         if (!getAntideleteEnabled()) {
           processedDeletes.set(dedupeKey, now);
           return;
         }
-        // Use CORRECT message ID to fetch from memory
+
         const originalMessage = memoryStore.getMessage('whatsapp', chatId, deletedMessageId);
-        
-        // console.log(`[antidelete] Recovery attempt for ${deletedMessageId}${originalMessage ? ' - FOUND' : ' - NOT FOUND'}`);
-        
-        if (!originalMessage) {
-          // Only log, do not send a message to owner if not found
-          // console.log(`[antidelete] Message not found in store for: ${deletedMessageId}`);
+        if (!originalMessage || originalMessage.key?.fromMe) {
           processedDeletes.set(dedupeKey, now);
           return;
         }
-        
-        if (originalMessage.key?.fromMe) {
-          // console.log('[antidelete] Skipping own deleted message');
-          processedDeletes.set(dedupeKey, now);
-          return;
-        }
-        
+
         const pushName = originalMessage.pushName || '';
         const isGroup = chatId.endsWith('@g.us');
         let groupName = '';
-        
+
         if (isGroup) {
           if (groupMetadataCache.has(chatId)) {
             groupName = groupMetadataCache.get(chatId);
@@ -282,361 +390,168 @@ export default {
               groupName = metadata.subject || 'Unknown Group';
               groupMetadataCache.set(chatId, groupName);
               setTimeout(() => groupMetadataCache.delete(chatId), 3600000);
-            } catch (e) {
+            } catch {
               groupName = 'Unknown Group';
             }
           }
         }
-        
-        let senderJid = deletedKey.participant || originalMessage.key?.participant || originalMessage.key?.remoteJid || deletedKey.remoteJid || deletedKey.remoteJidAlt || '';
+
+        const senderJid = deletedKey.participant || originalMessage.key?.participant || originalMessage.key?.remoteJid || '';
         let senderNumber = senderJid.split('@')[0] || 'Unknown';
-        
-        if (senderNumber.includes(':')) {
-          senderNumber = senderNumber.split(':')[0];
-        }
-        
-        const displayName = pushName || senderNumber;
-        const msg = originalMessage.message;
-        
-        if (!msg) {
-          // Only log, do not send a message to owner if not found
-          // console.log(`[antidelete] Message content unavailable for: ${deletedMessageId}`);
+        if (senderNumber.includes(':')) senderNumber = senderNumber.split(':')[0];
+
+        let actualMsg = originalMessage.message;
+        if (!actualMsg || actualMsg?.protocolMessage) {
           processedDeletes.set(dedupeKey, now);
           return;
         }
-        
-        let actualMsg = msg;
-        
-        if (actualMsg?.protocolMessage) {
-          processedDeletes.set(dedupeKey, now);
-          return; 
-        }
 
-        if (msg?.viewOnceMessage?.message) {
-          actualMsg = msg.viewOnceMessage.message;
-        } else if (msg?.viewOnceMessageV2?.message) {
-          actualMsg = msg.viewOnceMessageV2.message;
-        } else if (msg?.ephemeralMessage?.message) {
-          actualMsg = msg.ephemeralMessage.message;
-        }
+        if (actualMsg?.viewOnceMessage?.message) actualMsg = actualMsg.viewOnceMessage.message;
+        else if (actualMsg?.viewOnceMessageV2?.message) actualMsg = actualMsg.viewOnceMessageV2.message;
+        else if (actualMsg?.ephemeralMessage?.message) actualMsg = actualMsg.ephemeralMessage.message;
 
-        // Check for empty or context-only messages
         const actualMsgKeys = Object.keys(actualMsg || {});
-        const contextOnlyKeys = ['contextInfo', 'messageContextInfo'];
-        if (
-          actualMsgKeys.length === 0 ||
-          actualMsgKeys.every(k => contextOnlyKeys.includes(k))
-        ) {
-          // console.log(`[antidelete] Message has no content (context-only) for: ${deletedMessageId}`);
+        if (actualMsgKeys.length === 0 || actualMsgKeys.every(key => ['contextInfo', 'messageContextInfo'].includes(key))) {
           processedDeletes.set(dedupeKey, now);
           return;
         }
-        
-        let textContent = actualMsg?.conversation ||
-                         actualMsg?.extendedTextMessage?.text ||
-                         actualMsg?.imageMessage?.caption ||
-                         actualMsg?.videoMessage?.caption ||
-                         actualMsg?.documentMessage?.caption ||
-                         actualMsg?.buttonsResponseMessage?.selectedDisplayText ||
-                         actualMsg?.listResponseMessage?.title || 
-                         actualMsg?.templateButtonReplyMessage?.selectedDisplayText ||
-                         actualMsg?.buttonsMessage?.contentText ||
-                         actualMsg?.listMessage?.description || 
-                         actualMsg?.pollCreationMessage?.name || 
-                         actualMsg?.interactiveMessage?.body?.text || '';
-        
-        let mediaType = null;
-        const mediaTypes = [
-          'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 
-          'stickerMessage', 'contactMessage', 'locationMessage', 
-          'liveLocationMessage', 'pttMessage'
-        ];
-        
-        for (const type of mediaTypes) {
-          if (actualMsg?.[type]) {
-            mediaType = type.replace('Message', '');
-            break;
-          }
-        }
-        
-        let notification = '';
-        
-        if (isGroup) {
-          notification = `🗑️ *Deleted in ${groupName}*\n👤 @${senderNumber}\n\n`;
-        } else {
-          notification = `🗑️ *@${senderNumber}* deleted:\n\n`;
-        }
-        
-        if (textContent) {
-          notification += `"${textContent}"`;
-        } else if (mediaType) {
-          notification += `[${mediaType}]`;
-        } else {
-          const msgKeys = Object.keys(actualMsg || {});
-          if (msgKeys.length > 0) {
-            notification += `[${msgKeys[0]}]`;
-          } else {
-            notification += `[empty message]`;
-          }
-        }
-        
-        const mentions = [senderJid];
-        
-        // --- destination logic ---
-        const antideleteConf = getAntideleteConfig();
-        let destJid = ownerJid;
-        if (antideleteConf.dest === 'group') destJid = chatId;
-        else if (antideleteConf.dest === 'custom' && antideleteConf.jid) destJid = antideleteConf.jid;
 
+        const textContent = extractMessageBody(actualMsg);
+        const mediaType = extractMediaType(actualMsg);
+        let notification = isGroup
+          ? `Deleted in ${groupName}\n@${senderNumber}\n\n`
+          : `@${senderNumber} deleted:\n\n`;
+
+        if (textContent) notification += `"${textContent}"`;
+        else if (mediaType) notification += `[${mediaType}]`;
+        else notification += `[${actualMsgKeys[0] || 'empty message'}]`;
+
+        const destJid = resolveAntideleteDestination(ownerJid, getAntideleteConfig(), chatId);
         let sentNotif;
         try {
           sentNotif = await whatsappAdapter.client.sendMessage(destJid, {
             text: notification,
-            mentions
+            mentions: [senderJid]
           });
-        } catch (notifErr) {
-          console.error('[antidelete] Failed to send notification:', notifErr.message);
+        } catch (error) {
+          console.error('[antidelete] Failed to send notification:', error.message);
           processedDeletes.set(dedupeKey, now);
           return;
         }
 
-        // Send media as quoted reply
         if (mediaType && ['image', 'video', 'audio', 'document', 'sticker', 'ptt'].includes(mediaType)) {
-          let buffer = null;
-          
-          // First try: Download from WhatsApp servers
-          try {
-            buffer = await downloadMediaMessage(
-              originalMessage,
-              'buffer',
-              {},
-              { 
-                logger: whatsappAdapter.baileysLogger,
-                reuploadRequest: whatsappAdapter.client.updateMediaMessage 
-              }
-            );
-          } catch (downloadErr) {
-            // Download failed, try disk fallback
-          }
-          
-          // Second try: Load from disk storage (saved during memory cleanup)
-          if (!buffer) {
-            try {
-              buffer = memoryStore.getMediaFromDisk('whatsapp', chatId, deletedMessageId);
-              if (buffer) {
-                console.log('[antidelete] Recovered media from disk storage');
-              }
-            } catch (diskErr) {
-              // Disk read failed too
-            }
-          }
-          
-          if (buffer) {
-            try {
-              const messageType = `${mediaType}Message`;
-              const mimetype = actualMsg[messageType]?.mimetype || 'application/octet-stream';
-              
-              await whatsappAdapter.client.sendMessage(
-                destJid,
-                {
-                  [mediaType]: buffer,
-                  caption: mediaType !== 'sticker' ? `📎 Deleted ${mediaType}` : undefined,
-                  mimetype,
-                  ptt: mediaType === 'ptt'
-                },
-                {
-                  quoted: sentNotif
-                }
-              );
-            } catch (sendErr) {
-              console.error('[antidelete] Failed to send recovered media:', sendErr.message);
-            }
-          } else {
-            console.error('[antidelete] Failed to recover media: not available from server or disk');
-          }
+          await sendRecoveredMedia(
+            whatsappAdapter,
+            originalMessage,
+            chatId,
+            deletedMessageId,
+            mediaType,
+            actualMsg,
+            destJid,
+            sentNotif,
+            'antidelete'
+          );
         }
-        
-        // console.log(`[antidelete] ✅ Recovered deleted message from ${displayName}`);
-        
+
         processedDeletes.set(dedupeKey, now);
-        
-      } catch (err) {
-        console.error('[antidelete] Error processing deletion:', err);
+      } catch (error) {
+        console.error('[antidelete] Error processing deletion:', error);
         processedDeletes.set(dedupeKey, Date.now());
       } finally {
         processingDeletes.delete(dedupeKey);
       }
     };
-    
-    whatsappAdapter.on('raw:messages.update', async (updates) => {
+
+    const handleStatusDeletion = async (deletedKey, chatId, deletedMessageId) => {
+      if (!getStatusAntideleteEnabled()) return;
+
+      const senderJid = normalizeDirectJid(deletedKey.participant || 'unknown');
+      const conf = getStatusAntideleteConfig();
+      if (!shouldTrackStatusSender(senderJid, conf)) return;
+
+      const msg = memoryStore.getMessage('whatsapp', chatId, deletedMessageId);
+      if (!msg?.message) return;
+
+      const destJid = resolveAntideleteDestination(ownerJid, conf, ownerJid);
+      let senderNumber = (senderJid || 'unknown').split('@')[0] || 'Unknown';
+      if (senderNumber.includes(':')) senderNumber = senderNumber.split(':')[0];
+
+      const textContent = extractMessageBody(msg.message);
+      const mediaType = extractMediaType(msg.message);
+      let notification = `@${senderNumber} deleted status:\n\n`;
+      if (textContent) notification += `"${textContent}"`;
+      else if (mediaType) notification += `[${mediaType}]`;
+      else notification += `[${Object.keys(msg.message || {})[0] || 'empty message'}]`;
+
+      let sentNotif;
+      try {
+        sentNotif = await whatsappAdapter.client.sendMessage(destJid, {
+          text: notification,
+          mentions: senderJid ? [senderJid] : []
+        });
+      } catch (error) {
+        console.error('[statusantidelete] Failed to send notification:', error.message);
+        return;
+      }
+
+      if (mediaType && ['image', 'video', 'audio', 'document', 'sticker', 'ptt'].includes(mediaType)) {
+        await sendRecoveredMedia(
+          whatsappAdapter,
+          msg,
+          chatId,
+          deletedMessageId,
+          mediaType,
+          msg.message,
+          destJid,
+          sentNotif,
+          'statusantidelete'
+        );
+      }
+    };
+
+    const handleMessageUpdates = async (updates) => {
       for (const update of updates) {
         try {
-          // Check for REVOKE protocol message (Type 0) or messageStubType 1 (deletion)
           const isRevoke = update.update?.message?.protocolMessage?.type === 0;
           const isStubDelete = update.update?.messageStubType === 1;
-          if (!isStubDelete && !isRevoke) continue;
+          if (!isRevoke && !isStubDelete) continue;
 
-          let deletedKey;
-          if (isStubDelete) {
-            deletedKey = update.key;
-          } else if (isRevoke) {
-            deletedKey = update.update?.message?.protocolMessage?.key;
-          }
-          if (!deletedKey) continue;
+          const deletedKey = isStubDelete ? update.key : update.update?.message?.protocolMessage?.key;
+          if (!deletedKey?.id) continue;
 
           const chatId = deletedKey.remoteJid || deletedKey.remoteJidAlt;
           const deletedMessageId = deletedKey.id;
-          if (!chatId || !deletedMessageId) continue;
+          if (!chatId) continue;
 
-          // Centralized: route to status or normal antidelete
           if (chatId.endsWith('@status') || chatId.endsWith('@broadcast')) {
-            // --- STATUSANTIDELETE LOGIC ---
-            const STORAGE_PATH = path.join(process.cwd(), 'storage', 'storage.json');
-            const ENV_PATH = path.join(process.cwd(), '.env');
-            function getStatusConfig() {
-              let config = { dest: 'owner', jid: null };
-              try {
-                const raw = fs.readFileSync(STORAGE_PATH, 'utf8');
-                const json = JSON.parse(raw.replace(/^\/\/.*$/mg, ''));
-                if (json.statusantidelete) config = { ...config, ...json.statusantidelete };
-                if (config.dest !== 'custom') {
-                  config.dest = 'owner';
-                  config.jid = null;
-                }
-              } catch {}
-              return config;
-            }
-            function getStatusEnabled() {
-              try {
-                const env = fs.readFileSync(ENV_PATH, 'utf8');
-                const match = env.match(/^STATUSANTIDELETE_ENABLED=(true|on|1|false|off|0)/m);
-                if (!match) return false;
-                return ['true', 'on', '1'].includes(match[1]);
-              } catch { return false; }
-            }
-            if (!getStatusEnabled()) continue;
-            const from = deletedKey.participant || 'unknown';
-            const statusId = deletedKey.id;
-            // Use memoryStore for status messages (like antistatus did)
-            const msg = memoryStore.getMessage('whatsapp', chatId, deletedMessageId) || memoryStore.getMessage('whatsapp', chatId, statusId);
-            if (!msg) continue;
-            const conf = getStatusConfig();
-            let destJid;
-            if (conf.dest === 'group') destJid = chatId;
-            else if (conf.dest === 'custom' && conf.jid) destJid = conf.jid;
-            else if (conf.dest === 'owner') destJid = ownerJid;
-            if (!destJid) destJid = chatId; // fallback
-            // --- Build notification exactly like .delete ---
-            let senderJid = from;
-            let senderNumber = senderJid.split('@')[0] || 'Unknown';
-            if (senderNumber.includes(':')) senderNumber = senderNumber.split(':')[0];
-            const pushName = msg.pushName || '';
-            const isGroup = false; // status is never group
-            let notification = `🗑️ @${senderNumber} deleted status:\n\n`;
-            let textContent = msg.message?.conversation || msg.message?.extendedTextMessage?.text || msg.message?.imageMessage?.caption || msg.message?.videoMessage?.caption || msg.message?.documentMessage?.caption || '';
-            let mediaType = null;
-            const mediaTypes = [ 'imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage', 'contactMessage', 'locationMessage', 'liveLocationMessage', 'pttMessage' ];
-            for (const type of mediaTypes) {
-              if (msg.message?.[type]) {
-                mediaType = type.replace('Message', '');
-                break;
-              }
-            }
-            if (textContent) {
-              notification += `"${textContent}"`;
-            } else if (mediaType) {
-              notification += `[${mediaType}]`;
-            } else {
-              const msgKeys = Object.keys(msg.message || {});
-              if (msgKeys.length > 0) {
-                notification += `[${msgKeys[0]}]`;
-              } else {
-                notification += `[empty message]`;
-              }
-            }
-            const mentions = [senderJid];
-            let sentNotif;
-            try {
-              sentNotif = await whatsappAdapter.client.sendMessage(destJid, {
-                text: notification,
-                mentions
-              });
-            } catch (notifErr) {
-              console.error('[statusantidelete] Failed to send notification:', notifErr.message);
-              continue;
-            }
-            // Send media as quoted reply
-            if (mediaType && ['image', 'video', 'audio', 'document', 'sticker', 'ptt'].includes(mediaType)) {
-              let buffer = null;
-              
-              // First try: Download from WhatsApp servers
-              try {
-                buffer = await downloadMediaMessage(
-                  msg,
-                  'buffer',
-                  {},
-                  { 
-                    logger: whatsappAdapter.baileysLogger,
-                    reuploadRequest: whatsappAdapter.client.updateMediaMessage 
-                  }
-                );
-              } catch (downloadErr) {
-                // Download failed, try disk fallback
-              }
-              
-              // Second try: Load from disk storage (saved during memory cleanup)
-              if (!buffer) {
-                try {
-                  buffer = memoryStore.getMediaFromDisk('whatsapp', chatId, deletedMessageId);
-                  if (buffer) {
-                    console.log('[statusantidelete] Recovered media from disk storage');
-                  }
-                } catch (diskErr) {
-                  // Disk read failed too
-                }
-              }
-              
-              if (buffer) {
-                try {
-                  const messageType = `${mediaType}Message`;
-                  const mimetype = msg.message[messageType]?.mimetype || 'application/octet-stream';
-                  await whatsappAdapter.client.sendMessage(
-                    destJid,
-                    {
-                      [mediaType]: buffer,
-                      caption: mediaType !== 'sticker' ? `📎 Deleted status ${mediaType}` : undefined,
-                      mimetype,
-                      ptt: mediaType === 'ptt'
-                    },
-                    {
-                      quoted: sentNotif
-                    }
-                  );
-                } catch (sendErr) {
-                  console.error('[statusantidelete] Failed to send recovered media:', sendErr.message);
-                }
-              } else {
-                console.error('[statusantidelete] Failed to recover media: not available from server or disk');
-              }
-            }
+            await handleStatusDeletion(deletedKey, chatId, deletedMessageId);
             continue;
           }
 
-          // --- NORMAL ANTIDELETE LOGIC ---
           const dedupeKey = `${chatId}|${deletedMessageId}`;
           if (processingDeletes.has(dedupeKey)) continue;
-          const lastProcessed = processedDeletes.get(dedupeKey);
-          if (lastProcessed && (Date.now() - lastProcessed) < 300000) continue;
+          if ((processedDeletes.get(dedupeKey) || 0) + 300000 > Date.now()) continue;
+
           processingDeletes.add(dedupeKey);
-          // console.log(`[antidelete] Deletion detected. Queuing: ${deletedMessageId}`);
           deletionQueue.push({ deletedKey, chatId, deletedMessageId });
-          processQueue().catch(err => {
-            console.error('[antidelete] Queue processor error:', err);
+          processQueue().catch(error => {
+            console.error('[antidelete] Queue processor error:', error);
           });
-        } catch (err) {
-          console.error('[antidelete] Error queueing deletion:', err);
+        } catch (error) {
+          console.error('[antidelete] Error queueing deletion:', error);
         }
       }
-    });
+    };
+
+    whatsappAdapter.on('raw:messages.update', handleMessageUpdates);
+
+    return () => {
+      clearInterval(cleanupTimer);
+      if (typeof whatsappAdapter.off === 'function') {
+        whatsappAdapter.off('raw:messages.update', handleMessageUpdates);
+      } else if (typeof whatsappAdapter.removeListener === 'function') {
+        whatsappAdapter.removeListener('raw:messages.update', handleMessageUpdates);
+      }
+    };
   }
 };

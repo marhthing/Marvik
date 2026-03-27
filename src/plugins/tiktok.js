@@ -1,8 +1,8 @@
 import TiktokDL from '@tobyg74/tiktok-api-dl';
 import axios from 'axios';
-import fs from 'fs-extra';
-import path from 'path';
-import pendingActions, { shouldReact } from '../utils/pendingActions.js';
+import { shouldReact } from '../utils/pendingActions.js';
+import { getQuotedMessageObject } from '../utils/messageUtils.js';
+import { formatFileSize, promptNumericSelection, sendVideoBuffer } from '../utils/downloadFlow.js';
 
 const VIDEO_SIZE_LIMIT = 100 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
@@ -27,14 +27,13 @@ function isValidTikTokUrl(url) {
     /tiktok\.com\/t\/[\w-]+/,
     /tiktok\.com\/v\/\d+/
   ];
-  
   return tiktokPatterns.some(pattern => pattern.test(url));
 }
 
 function extractTikTokUrlFromObject(obj) {
   const tiktokRegex = /https?:\/\/(?:vm\.|vt\.|www\.)?tiktok\.com\/(?:@[\w.-]+\/video\/\d+|t\/[\w-]+|v\/\d+|[\w-]+)/i;
   if (!obj || typeof obj !== 'object') return null;
-  
+
   for (const key in obj) {
     if (typeof obj[key] === 'string') {
       const match = obj[key].match(tiktokRegex);
@@ -47,23 +46,14 @@ function extractTikTokUrlFromObject(obj) {
   return null;
 }
 
-function formatFileSize(bytes) {
-  if (bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  const unitIndex = Math.floor(Math.log(bytes) / Math.log(1024));
-  const size = bytes / Math.pow(1024, unitIndex);
-  return `${size.toFixed(1)} ${units[unitIndex]}`;
-}
-
 async function getFileSize(url) {
   try {
-    const head = await axios.head(url, { 
+    const head = await axios.head(url, {
       timeout: 10000,
       headers: { 'User-Agent': getRandomUserAgent() }
     });
-    const size = head.headers['content-length'] ? parseInt(head.headers['content-length'], 10) : 0;
-    return size;
-  } catch (e) {
+    return head.headers['content-length'] ? parseInt(head.headers['content-length'], 10) : 0;
+  } catch {
     return 0;
   }
 }
@@ -74,16 +64,74 @@ async function downloadMediaToBuffer(mediaUrl) {
     timeout: 120000,
     headers: {
       'User-Agent': getRandomUserAgent(),
-      'Referer': 'https://www.tiktok.com/'
+      Referer: 'https://www.tiktok.com/'
     }
   });
   return Buffer.from(response.data);
 }
 
+async function deliverTikTokVideo(ctx, url) {
+  const videoBuffer = await downloadMediaToBuffer(url);
+  await sendVideoBuffer(ctx, videoBuffer, {
+    sizeLimit: VIDEO_SIZE_LIMIT,
+    mediaLimit: VIDEO_MEDIA_LIMIT,
+    limitLabel: '100MB',
+    caption: 'TikTok video'
+  });
+}
+
+function buildQualityOptions(videoData) {
+  const qualities = [];
+  let index = 1;
+
+  const pushQuality = async (label, url) => {
+    const size = await getFileSize(url);
+    qualities.push({
+      label: `${index} - ${label}${size ? ` (${formatFileSize(size)})` : ''}`,
+      url
+    });
+    index += 1;
+  };
+
+  return (async () => {
+    if (videoData.video) {
+      if (videoData.video.noWatermark) {
+        await pushQuality('HD No Watermark', videoData.video.noWatermark);
+      }
+      if (Array.isArray(videoData.video.playAddr)) {
+        for (const addr of videoData.video.playAddr) {
+          await pushQuality(`Quality ${index}`, addr);
+        }
+      }
+      if (videoData.video.watermark && qualities.length === 0) {
+        await pushQuality('With Watermark', videoData.video.watermark);
+      }
+    }
+
+    if (videoData.video_data) {
+      if (videoData.video_data.nwm_video_url_HQ) {
+        await pushQuality('HD No Watermark', videoData.video_data.nwm_video_url_HQ);
+      }
+      if (videoData.video_data.nwm_video_url) {
+        await pushQuality('SD No Watermark', videoData.video_data.nwm_video_url);
+      }
+      if (videoData.video_data.wm_video_url && qualities.length === 0) {
+        await pushQuality('With Watermark', videoData.video_data.wm_video_url);
+      }
+    }
+
+    if (videoData.play) {
+      await pushQuality('Standard', videoData.play);
+    }
+
+    return qualities;
+  })();
+}
+
 export default {
   name: 'tiktok',
   description: 'TikTok video downloader with quality selection',
-  version: '2.0.0',
+  version: '2.1.0',
   author: 'MATDEV',
   commands: [
     {
@@ -99,18 +147,18 @@ export default {
       async execute(ctx) {
         try {
           let url = ctx.args.join(' ').trim();
-          
+
           if (!url) {
-            const quotedMessage = ctx.raw?.message?.extendedTextMessage?.contextInfo?.quotedMessage;
+            const quotedMessage = getQuotedMessageObject(ctx);
             if (quotedMessage) {
               url = extractTikTokUrlFromObject(quotedMessage) || '';
             }
           }
-          
+
           if (!url) {
             return await ctx.reply('Please provide a TikTok URL or reply to a message containing one\n\nUsage: .tiktok <url>');
           }
-          
+
           if (!isValidTikTokUrl(url)) {
             return await ctx.reply('Invalid TikTok URL. Please provide a valid TikTok video link.');
           }
@@ -119,20 +167,15 @@ export default {
           await humanDelay(800, 1500);
 
           let videoData = null;
-          const versions = ["v2", "v1", "v3"];
-          
-          for (const version of versions) {
+          for (const version of ['v2', 'v1', 'v3']) {
             try {
               await humanDelay(500, 1000);
               const result = await TiktokDL.Downloader(url, { version });
-              
-              if (result && result.status === "success" && result.result) {
+              if (result?.status === 'success' && result.result) {
                 videoData = result.result;
                 break;
               }
-            } catch (versionError) {
-              continue;
-            }
+            } catch {}
           }
 
           if (!videoData) {
@@ -140,169 +183,42 @@ export default {
             return await ctx.reply('Failed to fetch TikTok video. Please try again later.');
           }
 
-          const qualities = [];
-          let idx = 1;
-
-          if (videoData.video) {
-            if (videoData.video.noWatermark) {
-              const size = await getFileSize(videoData.video.noWatermark);
-              qualities.push({ 
-                label: `${idx} - HD No Watermark${size ? ` (${formatFileSize(size)})` : ''}`, 
-                url: videoData.video.noWatermark 
-              });
-              idx++;
-            }
-            if (videoData.video.playAddr && videoData.video.playAddr.length > 0) {
-              for (const addr of videoData.video.playAddr) {
-                const size = await getFileSize(addr);
-                qualities.push({ 
-                  label: `${idx} - Quality ${idx}${size ? ` (${formatFileSize(size)})` : ''}`, 
-                  url: addr 
-                });
-                idx++;
-              }
-            }
-            if (videoData.video.watermark && qualities.length === 0) {
-              const size = await getFileSize(videoData.video.watermark);
-              qualities.push({ 
-                label: `${idx} - With Watermark${size ? ` (${formatFileSize(size)})` : ''}`, 
-                url: videoData.video.watermark 
-              });
-              idx++;
-            }
-          }
-
-          if (videoData.video_data) {
-            if (videoData.video_data.nwm_video_url_HQ) {
-              const size = await getFileSize(videoData.video_data.nwm_video_url_HQ);
-              qualities.push({ 
-                label: `${idx} - HD No Watermark${size ? ` (${formatFileSize(size)})` : ''}`, 
-                url: videoData.video_data.nwm_video_url_HQ 
-              });
-              idx++;
-            }
-            if (videoData.video_data.nwm_video_url) {
-              const size = await getFileSize(videoData.video_data.nwm_video_url);
-              qualities.push({ 
-                label: `${idx} - SD No Watermark${size ? ` (${formatFileSize(size)})` : ''}`, 
-                url: videoData.video_data.nwm_video_url 
-              });
-              idx++;
-            }
-            if (videoData.video_data.wm_video_url && qualities.length === 0) {
-              const size = await getFileSize(videoData.video_data.wm_video_url);
-              qualities.push({ 
-                label: `${idx} - With Watermark${size ? ` (${formatFileSize(size)})` : ''}`, 
-                url: videoData.video_data.wm_video_url 
-              });
-              idx++;
-            }
-          }
-
-          if (videoData.play) {
-            const size = await getFileSize(videoData.play);
-            qualities.push({ 
-              label: `${idx} - Standard${size ? ` (${formatFileSize(size)})` : ''}`, 
-              url: videoData.play 
-            });
-            idx++;
-          }
-
+          const qualities = await buildQualityOptions(videoData);
           if (qualities.length === 0) {
             if (shouldReact()) await ctx.react('❌');
             return await ctx.reply('No downloadable video found.');
           }
 
-          if (qualities.length > 1) {
-            let prompt = 'Select video quality by replying with the number:\n';
-            prompt += qualities.map(q => q.label).join('\n');
-            const sentMsg = await ctx.reply(prompt);
-            
-            pendingActions.set(ctx.chatId, sentMsg.key.id, {
-              type: 'tiktok_quality',
-              userId: ctx.senderId,
-              data: { qualities },
-              match: (text) => {
-                if (typeof text !== 'string') return false;
-                const n = parseInt(text.trim(), 10);
-                return n >= 1 && n <= qualities.length;
-              },
-              handler: async (replyCtx, pending) => {
-                const choice = parseInt(replyCtx.text.trim(), 10);
-                const videoUrl = pending.data.qualities[choice - 1].url;
-                if (shouldReact()) await replyCtx.react('⏳');
-                try {
-                  const videoBuffer = await downloadMediaToBuffer(videoUrl);
-                  const size = videoBuffer.length;
-                  
-                  if (size > VIDEO_SIZE_LIMIT) {
-                    if (shouldReact()) await replyCtx.react('❌');
-                    return await replyCtx.reply(`Video too large (${formatFileSize(size)}). Limit is 100MB.`);
-                  }
-                  
-                  // Telegram: 50MB hard limit for bots
-                  const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-                  if (ctx.platform === 'telegram' && size > TELEGRAM_FILE_LIMIT) {
-                    if (shouldReact()) await ctx.react('❌');
-                    return await ctx.reply('Video too large for Telegram (limit is 50MB).');
-                  }
-
-                  if (size > VIDEO_MEDIA_LIMIT) {
-                    await replyCtx._adapter.sendMedia(replyCtx.chatId, videoBuffer, {
-                      type: 'document',
-                      mimetype: 'video/mp4',
-                      caption: 'TikTok video'
-                    });
-                  } else {
-                    await replyCtx._adapter.sendMedia(replyCtx.chatId, videoBuffer, {
-                      type: 'video',
-                      mimetype: 'video/mp4'
-                    });
-                  }
-                  if (shouldReact()) await replyCtx.react('✅');
-                } catch (error) {
-                  // console.error('TikTok download error:', error);
-                  if (shouldReact()) await replyCtx.react('❌');
-                  await replyCtx.reply('Failed to download selected quality.');
-                }
-              },
-              timeout: 10 * 60 * 1000
-            });
-            if (shouldReact()) await ctx.react('');
+          if (qualities.length === 1) {
+            await deliverTikTokVideo(ctx, qualities[0].url);
+            if (shouldReact()) await ctx.react('✅');
             return;
           }
 
-          const videoBuffer = await downloadMediaToBuffer(qualities[0].url);
-          const size = videoBuffer.length;
-          
-          if (size > VIDEO_SIZE_LIMIT) {
-            if (shouldReact()) await ctx.react('❌');
-            return await ctx.reply(`Video too large (${formatFileSize(size)}). Limit is 100MB.`);
-          }
-          
-          // Telegram: 50MB hard limit for bots
-          const TELEGRAM_FILE_LIMIT = 50 * 1024 * 1024;
-          if (ctx.platform === 'telegram' && size > TELEGRAM_FILE_LIMIT) {
-            if (shouldReact()) await ctx.react('❌');
-            return await ctx.reply('Video too large for Telegram (limit is 50MB).');
-          }
+          let prompt = 'Select video quality by replying with the number:\n';
+          prompt += qualities.map(choice => choice.label).join('\n');
 
-          if (size > VIDEO_MEDIA_LIMIT) {
-            await ctx._adapter.sendMedia(ctx.chatId, videoBuffer, {
-              type: 'document',
-              mimetype: 'video/mp4',
-              caption: 'TikTok video'
-            });
-          } else {
-            await ctx._adapter.sendMedia(ctx.chatId, videoBuffer, {
-              type: 'video',
-              mimetype: 'video/mp4'
-            });
-          }
-          if (shouldReact()) await ctx.react('✅');
-
+          await promptNumericSelection(ctx, {
+            type: 'tiktok_quality',
+            prompt,
+            choices: qualities,
+            handler: async (replyCtx, selected) => {
+              if (shouldReact()) await replyCtx.react('⏳');
+              try {
+                await deliverTikTokVideo(replyCtx, selected.url);
+                if (shouldReact()) await replyCtx.react('✅');
+              } catch (error) {
+                if (shouldReact()) await replyCtx.react('❌');
+                const message = error.message?.includes('Video too large')
+                  ? error.message
+                  : 'Failed to download selected quality.';
+                await replyCtx.reply(message);
+              }
+              return true;
+            }
+          });
         } catch (error) {
-          console.error('TikTok Telegram error:', error);
+          console.error('TikTok error:', error);
           if (shouldReact()) await ctx.react('❌');
           await ctx.reply('An error occurred while processing the TikTok video. Please try again.\n' + (error && error.message ? error.message : error));
         }

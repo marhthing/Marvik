@@ -53,6 +53,10 @@ export default {
       description: 'Translate text to another language',
       usage: '.translate <to_language> <text> OR .translate languages',
       category: 'utility',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       
       async execute(ctx) {
         try {

@@ -27,7 +27,7 @@ export default {
     }
 
     // Listen for replies to owner's status
-    whatsappAdapter.client?.ev?.on('messages.upsert', async (ev) => {
+    const handleMessagesUpsert = async (ev) => {
       try {
         if (ev.type !== 'notify' || !Array.isArray(ev.messages)) {
           return;
@@ -113,6 +113,18 @@ export default {
       } catch (err) {
         console.error('[send.js] Top-level error in messages.upsert', err, JSON.stringify(err));
       }
-    });
+    };
+
+    whatsappAdapter.client?.ev?.on('messages.upsert', handleMessagesUpsert);
+
+    return () => {
+      const eventBus = whatsappAdapter.client?.ev;
+      if (!eventBus) return;
+      if (typeof eventBus.off === 'function') {
+        eventBus.off('messages.upsert', handleMessagesUpsert);
+      } else if (typeof eventBus.removeListener === 'function') {
+        eventBus.removeListener('messages.upsert', handleMessagesUpsert);
+      }
+    };
   }
 };

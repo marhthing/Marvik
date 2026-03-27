@@ -9,11 +9,14 @@ export default {
   commands: [
     {
       name: 'image',
-      aliases: ['img', 'pollinations'],
+      aliases: ['pollinations'],
       description: 'Generate an image from text prompt',
       usage: '.image <prompt> or reply to a message with .image',
       category: 'ai',
       cooldown: 5,
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
       async execute(ctx) {
         let prompt = ctx.args.join(' ');
         if (!prompt && ctx.quoted) {

@@ -26,7 +26,6 @@ export default {
         const day = now.toLocaleDateString('en-US', { weekday: 'long' });
         const date = now.toLocaleDateString('en-US');
         const version = '1.0.0';
-        const plugins = ctx.bot?.commands?.length || 0;
         const ram = `${formatMB(usedMem)}/${formatMB(totalMem)}MB`;
         // Uptime
         const upSec = process.uptime();
@@ -44,6 +43,7 @@ export default {
         } else if (ctx.bot && Array.isArray(ctx.bot.commands)) {
           allCommands = ctx.bot.commands;
         }
+        const plugins = allCommands.length;
         // Group commands by category
         const categories = {};
         for (const cmd of allCommands) {

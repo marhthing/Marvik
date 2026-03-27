@@ -1,7 +1,7 @@
-import pendingActions from '../utils/pendingActions.js';
 import GameEngine from '../utils/GameEngine.js';
 import ai from '../utils/ai.js';
 import logger from '../utils/logger.js';
+import { cloneReplySession, createReplySession } from '../utils/gameSessions.js';
 
 const triviaQuestions = [
   { question: "What is the capital of France?", answer: "B", options: ["London", "Paris", "Berlin", "Madrid"] },
@@ -13,6 +13,28 @@ const triviaQuestions = [
 
 const activeGames = new Map();
 const optionLetters = ['A', 'B', 'C', 'D'];
+const fallbackTrivia = triviaQuestions[0];
+const fallbackRiddle = { riddle: 'What has keys but no locks?', answer: 'piano', hint: 'Musical instrument' };
+
+function normalizeTriviaQuestion(raw) {
+  if (!raw || typeof raw !== 'object') return fallbackTrivia;
+  const question = typeof raw.question === 'string' && raw.question.trim() ? raw.question.trim() : fallbackTrivia.question;
+  const options = Array.isArray(raw.options) && raw.options.length >= 4
+    ? raw.options.slice(0, 4).map(opt => (typeof opt === 'string' ? opt : String(opt ?? '')))
+    : fallbackTrivia.options;
+
+  let answer = raw.answer;
+  if (typeof answer === 'string') answer = answer.trim();
+  if (!answer) return { question, options, answer: fallbackTrivia.answer };
+
+  const upper = String(answer).toUpperCase();
+  if (optionLetters.includes(upper)) return { question, options, answer: upper };
+
+  const answerIndex = options.findIndex(opt => String(opt).trim().toLowerCase() === String(answer).trim().toLowerCase());
+  if (answerIndex >= 0) return { question, options, answer: optionLetters[answerIndex] };
+
+  return { question, options, answer: fallbackTrivia.answer };
+}
 
 function normalizeId(id) {
   if (!id) return '';
@@ -65,18 +87,17 @@ async function sendTriviaQuestion(ctx, game) {
     q = triviaQuestions[Math.floor(Math.random() * triviaQuestions.length)];
   }
   
-  if (!q) q = triviaQuestions[0];
-  game.currentQuestion = q;
+  game.currentQuestion = normalizeTriviaQuestion(q);
   
   const currentPlayerArr = [...participants.entries()];
   game.currentPlayerIndex = game.currentPlayerIndex % currentPlayerArr.length;
   const [currentPlayerId, currentPlayerData] = currentPlayerArr[game.currentPlayerIndex];
   game.currentTurn = currentPlayerId;
   
-  const options = q.options.map((opt, i) => `${optionLetters[i]}. ${opt}`).join('\n');
+  const options = game.currentQuestion.options.map((opt, i) => `${optionLetters[i]}. ${opt}`).join('\n');
   const sent = await ctx.reply(
     `*🧠 AI Trivia - Round ${game.round}*\n\n` +
-    `${q.question}\n\n${options}\n\n` +
+    `${game.currentQuestion.question}\n\n${options}\n\n` +
     `👤 @${normalizeId(currentPlayerId)} (${currentPlayerData.name})'s turn!\n` +
     `⏱️ Time: 30 seconds\n\n` +
     `Reply with A, B, C or D\n` +
@@ -94,7 +115,7 @@ async function sendTriviaQuestion(ctx, game) {
     await sendTriviaQuestion(ctx, game);
   }, 30000);
   
-  pendingActions.set(ctx.chatId, sent.key.id, {
+  createReplySession(ctx.chatId, sent, {
     type: 'trivia_answer',
     data: { gameId: ctx.chatId },
     timeout: 35000,
@@ -181,7 +202,7 @@ async function startTicTacToeGame(ctx, game) {
     { mentions: [game.player1, game.player2] }
   );
   
-  pendingActions.set(ctx.chatId, sent.key.id, {
+  createReplySession(ctx.chatId, sent, {
     type: 'ttt_move',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
@@ -220,7 +241,7 @@ async function startTicTacToeGame(ctx, game) {
       g.currentTurn = g.currentTurn === g.player1 ? g.player2 : g.player1;
       const nextP = g.engine.participants.get(g.currentTurn);
       const nextS = await replyCtx.reply(`${renderTicTacToeBoard(g.board)}\n\n👤 @${normalizeId(g.currentTurn)} (${nextP.name})'s turn!`, { mentions: [g.currentTurn] });
-      pendingActions.set(replyCtx.chatId, nextS.key.id, { ...pendingActions.get(replyCtx.chatId, sent.key.id) });
+      cloneReplySession(replyCtx.chatId, sent.key.id, nextS);
       return false;
     }
   });
@@ -245,7 +266,7 @@ async function startHangmanGame(ctx, game) {
     { mentions: [game.currentTurn] }
   );
   
-  pendingActions.set(ctx.chatId, sent.key.id, {
+  createReplySession(ctx.chatId, sent, {
     type: 'hangman_guess',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
@@ -278,7 +299,7 @@ async function startHangmanGame(ctx, game) {
         `Word: ${newDisplay}\nWrong: ${g.wrongGuesses}/${g.maxWrong}\nGuessed: ${[...g.guessedLetters].join(', ')}\n\nNext: @${normalizeId(g.currentTurn)}`,
         { mentions: [g.currentTurn] }
       );
-      pendingActions.set(ctx.chatId, next.key.id, { ...pendingActions.get(ctx.chatId, sent.key.id) });
+      cloneReplySession(ctx.chatId, sent.key.id, next);
       return false;
     }
   });
@@ -301,7 +322,7 @@ async function startWordleGame(ctx, game) {
     { mentions: [game.currentTurn] }
   );
 
-  pendingActions.set(ctx.chatId, sent.key.id, {
+  createReplySession(ctx.chatId, sent, {
     type: 'wordle_guess',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
@@ -336,7 +357,7 @@ async function startWordleGame(ctx, game) {
         `${g.history.join('\n\n')}\n\nAttempts: ${g.attempts}/${g.maxAttempts}\nNext: @${normalizeId(g.currentTurn)}`,
         { mentions: [g.currentTurn] }
       );
-      pendingActions.set(ctx.chatId, next.key.id, { ...pendingActions.get(ctx.chatId, sent.key.id) });
+      cloneReplySession(ctx.chatId, sent.key.id, next);
       return false;
     }
   });
@@ -347,9 +368,10 @@ async function startRiddleGame(ctx, game) {
   try {
     r = await ai.getOrFetchItem('riddles');
   } catch (e) {
-    r = { riddle: "What has keys but no locks?", answer: "piano", hint: "Musical instrument" };
+    r = fallbackRiddle;
   }
-  
+  if (!r || typeof r !== 'object' || !r.riddle || !r.answer) r = fallbackRiddle;
+
   game.currentRiddle = r;
   game.currentTurn = [...game.engine.participants.keys()][0];
 
@@ -361,7 +383,7 @@ async function startRiddleGame(ctx, game) {
     { mentions: [game.currentTurn] }
   );
 
-  pendingActions.set(ctx.chatId, sent.key.id, {
+  createReplySession(ctx.chatId, sent, {
     type: 'riddle_guess',
     data: { gameId: ctx.chatId },
     timeout: 60000,
@@ -384,23 +406,33 @@ async function startRiddleGame(ctx, game) {
       const participants = [...g.engine.participants.keys()];
       g.currentTurn = participants[(participants.indexOf(g.currentTurn) + 1) % participants.length];
       const next = await replyCtx.reply(`❌ Wrong! Next turn: @${normalizeId(g.currentTurn)}`, { mentions: [g.currentTurn] });
-      pendingActions.set(ctx.chatId, next.key.id, { ...pendingActions.get(ctx.chatId, sent.key.id) });
+      cloneReplySession(ctx.chatId, sent.key.id, next);
       return false;
     }
   });
 }
 
 async function startTruthDareGame(ctx, game, type) {
-  let content;
-  try {
-    content = await ai.getOrFetchItem(type);
-    // Defensive: fallback if null or not a string
-    if (!content || typeof content !== 'string') {
-      content = type === 'truth' ? "What is your biggest secret?" : "Do 10 pushups!";
+  const getTruthDarePrompt = async (promptType) => {
+    const fallback = promptType === 'truth'
+      ? "What is your biggest secret?"
+      : "Do 10 pushups!";
+    try {
+      const value = await ai.getOrFetchItem(promptType);
+      if (!value || typeof value !== 'string') return fallback;
+      const normalized = value.trim();
+      if (!normalized || normalized.toLowerCase() === 'null' || normalized.toLowerCase() === 'undefined') {
+        return fallback;
+      }
+      return normalized;
+    } catch (e) {
+      return fallback;
     }
-  } catch (e) {
-    content = type === 'truth' ? "What is your biggest secret?" : "Do 10 pushups!";
-  }
+  };
+  
+  const mode = type === 'truth' || type === 'dare' ? type : 'mixed';
+  game.turnMode = mode;
+  const content = await getTruthDarePrompt(type);
   
   game.currentTurn = [...game.engine.participants.keys()][0];
   const sent = await ctx.reply(
@@ -411,7 +443,7 @@ async function startTruthDareGame(ctx, game, type) {
     { mentions: [game.currentTurn] }
   );
 
-  pendingActions.set(ctx.chatId, sent.key.id, {
+  createReplySession(ctx.chatId, sent, {
     type: 'td_done',
     data: { gameId: ctx.chatId, type },
     timeout: 5 * 60 * 1000,
@@ -427,15 +459,16 @@ async function startTruthDareGame(ctx, game, type) {
       const participants = [...g.engine.participants.keys()];
       g.currentTurn = participants[(participants.indexOf(g.currentTurn) + 1) % participants.length];
       
-      const nextType = Math.random() > 0.5 ? 'truth' : 'dare';
-      let nextContent;
-      try { nextContent = await ai.getOrFetchItem(nextType); } catch(e) { nextContent = "Tell a joke!"; }
+      const nextType = g.turnMode === 'mixed'
+        ? (Math.random() > 0.5 ? 'truth' : 'dare')
+        : g.turnMode;
+      const nextContent = await getTruthDarePrompt(nextType);
       
       const next = await replyCtx.reply(
         `✅ Nice!\n\n*Next Turn:* @${normalizeId(g.currentTurn)}\nType: *${nextType.toUpperCase()}*\n\n"${nextContent}"`,
         { mentions: [g.currentTurn] }
       );
-      pendingActions.set(ctx.chatId, next.key.id, { ...pendingActions.get(ctx.chatId, sent.key.id) });
+      cloneReplySession(ctx.chatId, sent.key.id, next);
       return false;
     }
   });
@@ -447,7 +480,8 @@ async function startAkinatorGame(ctx, game) {
   game.step = 0;
   game.maxSteps = 20;
 
-  const firstQuestion = await ai.generateAkinatorQuestion([], []);
+  let firstQuestion = await ai.generateAkinatorQuestion([], []);
+  if (!firstQuestion || typeof firstQuestion !== 'string') firstQuestion = 'Is your character a real person?';
   game.questionHistory.push({ question: firstQuestion });
   
   const sent = await ctx.reply(
@@ -458,7 +492,7 @@ async function startAkinatorGame(ctx, game) {
     { mentions: [...game.engine.participants.keys()] }
   );
 
-  pendingActions.set(ctx.chatId, sent.key.id, {
+  createReplySession(ctx.chatId, sent, {
     type: 'akinator_answer',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
@@ -474,10 +508,10 @@ async function startAkinatorGame(ctx, game) {
       g.step++;
 
       if (g.step >= 5 && g.step % 5 === 0) {
-        const guess = await ai.analyzeAkinatorAnswers(g.answers, g.questionHistory);
+        const guess = await ai.analyzeAkinatorAnswers(g.answers, g.questionHistory) || 'someone famous';
         const guessSent = await replyCtx.reply(`🤔 I'm thinking of... *${guess}*?\n\nIs this correct? (Yes/No/Stop)`);
         
-        pendingActions.set(ctx.chatId, guessSent.key.id, {
+        createReplySession(ctx.chatId, guessSent, {
             type: 'akinator_guess',
             data: { gameId: ctx.chatId, guess },
             timeout: 60000,
@@ -496,20 +530,22 @@ async function startAkinatorGame(ctx, game) {
                     return true;
                 }
                 // Continue to next question
-                const nextQ = await ai.generateAkinatorQuestion(g.questionHistory, g.answers);
+                let nextQ = await ai.generateAkinatorQuestion(g.questionHistory, g.answers);
+                if (!nextQ || typeof nextQ !== 'string') nextQ = 'Is your character from a movie or TV show?';
                 g.questionHistory.push({ question: nextQ });
                 const nextSent = await guessCtx.reply(`Step ${g.step + 1}/${g.maxSteps}\n❓ ${nextQ}`);
-                pendingActions.set(ctx.chatId, nextSent.key.id, { ...pendingActions.get(ctx.chatId, sent.key.id) });
+                cloneReplySession(ctx.chatId, sent.key.id, nextSent);
                 return true;
             }
         });
         return true;
       }
 
-      const nextQ = await ai.generateAkinatorQuestion(g.questionHistory, g.answers);
+      let nextQ = await ai.generateAkinatorQuestion(g.questionHistory, g.answers);
+      if (!nextQ || typeof nextQ !== 'string') nextQ = 'Is your character older than 30?';
       g.questionHistory.push({ question: nextQ });
       const nextS = await replyCtx.reply(`Step ${g.step + 1}/${g.maxSteps}\n❓ ${nextQ}`);
-      pendingActions.set(ctx.chatId, nextS.key.id, { ...pendingActions.get(ctx.chatId, sent.key.id) });
+      cloneReplySession(ctx.chatId, sent.key.id, nextS);
       return false;
     }
   });
@@ -532,8 +568,7 @@ const commands = [
         gameType: 'trivia', 
         minPlayers: 2,
         maxPlayers: 10, 
-        onStart: () => sendTriviaQuestion(ctx, game) 
-      });
+        onStart: () => sendTriviaQuestion(ctx, game), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }
@@ -549,8 +584,7 @@ const commands = [
       game.engine = new GameEngine(ctx, { 
         gameType: 'ttt', 
         maxPlayers: 2, 
-        onStart: () => startTicTacToeGame(ctx, game) 
-      });
+        onStart: () => startTicTacToeGame(ctx, game), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }
@@ -562,7 +596,7 @@ const commands = [
     execute: async (ctx) => {
       if (activeGames.has(ctx.chatId)) return ctx.reply('Game running!');
       const game = {};
-      game.engine = new GameEngine(ctx, { gameType: 'hangman', maxPlayers: 5, onStart: () => startHangmanGame(ctx, game) });
+      game.engine = new GameEngine(ctx, { gameType: 'hangman', maxPlayers: 5, onStart: () => startHangmanGame(ctx, game), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }
@@ -574,7 +608,7 @@ const commands = [
     execute: async (ctx) => {
       if (activeGames.has(ctx.chatId)) return ctx.reply('Game running!');
       const game = {};
-      game.engine = new GameEngine(ctx, { gameType: 'wordle', maxPlayers: 1, onStart: () => startWordleGame(ctx, game) });
+      game.engine = new GameEngine(ctx, { gameType: 'wordle', maxPlayers: 1, onStart: () => startWordleGame(ctx, game), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }
@@ -586,7 +620,7 @@ const commands = [
     execute: async (ctx) => {
       if (activeGames.has(ctx.chatId)) return ctx.reply('Game running!');
       const game = {};
-      game.engine = new GameEngine(ctx, { gameType: 'riddle', maxPlayers: 5, onStart: () => startRiddleGame(ctx, game) });
+      game.engine = new GameEngine(ctx, { gameType: 'riddle', maxPlayers: 5, onStart: () => startRiddleGame(ctx, game), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }
@@ -598,7 +632,7 @@ const commands = [
     execute: async (ctx) => {
       if (activeGames.has(ctx.chatId)) return ctx.reply('Game running!');
       const game = {};
-      game.engine = new GameEngine(ctx, { gameType: 'truth', maxPlayers: 10, onStart: () => startTruthDareGame(ctx, game, 'truth') });
+      game.engine = new GameEngine(ctx, { gameType: 'truth', maxPlayers: 10, onStart: () => startTruthDareGame(ctx, game, 'truth'), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }
@@ -610,7 +644,7 @@ const commands = [
     execute: async (ctx) => {
       if (activeGames.has(ctx.chatId)) return ctx.reply('Game running!');
       const game = {};
-      game.engine = new GameEngine(ctx, { gameType: 'dare', maxPlayers: 10, onStart: () => startTruthDareGame(ctx, game, 'dare') });
+      game.engine = new GameEngine(ctx, { gameType: 'dare', maxPlayers: 10, onStart: () => startTruthDareGame(ctx, game, 'dare'), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }
@@ -622,7 +656,7 @@ const commands = [
     execute: async (ctx) => {
       if (activeGames.has(ctx.chatId)) return ctx.reply('Game running!');
       const game = {};
-      game.engine = new GameEngine(ctx, { gameType: 'akinator', maxPlayers: 1, onStart: () => startAkinatorGame(ctx, game) });
+      game.engine = new GameEngine(ctx, { gameType: 'akinator', maxPlayers: 1, onStart: () => startAkinatorGame(ctx, game), onEnd: () => activeGames.delete(ctx.chatId) });
       activeGames.set(ctx.chatId, game);
       await game.engine.startJoinPhase();
     }

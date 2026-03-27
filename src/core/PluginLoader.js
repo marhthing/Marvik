@@ -49,6 +49,8 @@ export default class PluginLoader {
         return;
       }
 
+      const registeredCommands = [];
+
       // Register all commands from the plugin (if any)
       if (plugin.commands && Array.isArray(plugin.commands)) {
         for (const command of plugin.commands) {
@@ -57,27 +59,38 @@ export default class PluginLoader {
             command.execute = command.run;
           }
           this.commandRegistry.register(command.name, command);
+          registeredCommands.push(command.name);
         }
       }
+
+      let cleanup = null;
 
       // Call onLoad hook if present
       if (typeof plugin.onLoad === 'function' && this.bot) {
         try {
-          await plugin.onLoad(this.bot);
+          const onLoadResult = await plugin.onLoad(this.bot);
+          if (typeof onLoadResult === 'function') {
+            cleanup = onLoadResult;
+          }
         } catch (hookError) {
           this.logger.error({ error: hookError, plugin: plugin.name }, 'Plugin onLoad hook failed');
         }
       }
 
+      let unregisterMessageHandler = null;
+
       // Register onMessage handler if present
       if (typeof plugin.onMessage === 'function') {
-        this.commandRegistry.registerMessageHandler(plugin.onMessage.bind(plugin));
+        unregisterMessageHandler = this.commandRegistry.registerMessageHandler(plugin.onMessage.bind(plugin));
         this.logger.info(`Registered onMessage handler for plugin: ${plugin.name}`);
       }
 
       this.plugins.set(plugin.name, {
         ...plugin,
+        cleanup,
         filename,
+        registeredCommands,
+        unregisterMessageHandler,
         loaded: new Date()
       });
 
@@ -95,34 +108,59 @@ export default class PluginLoader {
       return false;
     }
 
-    // Unregister all commands from this plugin
-    if (plugin.commands) {
-      for (const command of plugin.commands) {
-        this.commandRegistry.unregister(command.name);
-      }
-    }
-
+    await this.teardown(plugin);
     this.plugins.delete(pluginName);
     await this.load(plugin.filename);
     return true;
   }
 
-  unload(pluginName) {
+  async unload(pluginName) {
     const plugin = this.plugins.get(pluginName);
     if (!plugin) {
       this.logger.warn(`Plugin not found: ${pluginName}`);
       return false;
     }
 
-    if (plugin.commands) {
+    await this.teardown(plugin);
+    this.plugins.delete(pluginName);
+    this.logger.info(`Unloaded plugin: ${pluginName}`);
+    return true;
+  }
+
+  async teardown(plugin) {
+    if (plugin.unregisterMessageHandler) {
+      try {
+        plugin.unregisterMessageHandler();
+      } catch (error) {
+        this.logger.error({ error, plugin: plugin.name }, 'Plugin message handler cleanup failed');
+      }
+    }
+
+    if (typeof plugin.cleanup === 'function') {
+      try {
+        await plugin.cleanup();
+      } catch (error) {
+        this.logger.error({ error, plugin: plugin.name }, 'Plugin cleanup failed');
+      }
+    }
+
+    if (typeof plugin.onUnload === 'function' && this.bot) {
+      try {
+        await plugin.onUnload(this.bot);
+      } catch (error) {
+        this.logger.error({ error, plugin: plugin.name }, 'Plugin onUnload hook failed');
+      }
+    }
+
+    if (Array.isArray(plugin.registeredCommands)) {
+      for (const commandName of plugin.registeredCommands) {
+        this.commandRegistry.unregister(commandName);
+      }
+    } else if (plugin.commands) {
       for (const command of plugin.commands) {
         this.commandRegistry.unregister(command.name);
       }
     }
-
-    this.plugins.delete(pluginName);
-    this.logger.info(`Unloaded plugin: ${pluginName}`);
-    return true;
   }
 
   getAll() {

@@ -6,11 +6,14 @@ import PermissionManager from './PermissionManager.js';
 import RateLimiter from '../utils/rateLimiter.js';
 import MediaHandler from '../utils/mediaHandler.js';
 import WhatsAppAdapter from '../adapters/WhatsAppAdapter.js';
-import TelegramAdapter from '../adapters/TelegramAdapter.js';
 import { startKeepAlive, stopKeepAlive } from '../utils/keepAlive.js';
 import fs from 'fs';
 import path from 'path';
 import pendingActions from '../utils/pendingActions.js';
+import memoryStore from '../utils/memory.js';
+import { getOwnerJidFromConfig } from '../utils/whatsappJid.js';
+
+const RESTART_NOTICE_PATH = path.resolve(process.cwd(), '.restart_notice');
 
 export default class Bot extends EventEmitter {
   constructor(config) {
@@ -73,15 +76,12 @@ export default class Bot extends EventEmitter {
 
     await this.pluginLoader.loadAll();
 
-    if (this.config.platforms.telegram) {
-      await this.initializeTelegram();
-    }
-
     if (this.adapters.size === 0) {
       this.logger.error('No platforms enabled! Enable at least one platform in .env');
       process.exit(1);
     }
 
+    await this.notifyOwnerStartup();
     this.logger.info(`${this.config.botName} started successfully on ${this.adapters.size} platform(s)`);
   }
 
@@ -117,35 +117,58 @@ export default class Bot extends EventEmitter {
 
   async restart() {
     this.logger.info('Restarting bot...');
+    try {
+      fs.writeFileSync(RESTART_NOTICE_PATH, 'restart', 'utf8');
+    } catch (error) {
+      this.logger.warn({ error }, 'Failed to persist restart notice');
+    }
     await this.stop();
     process.exit(0);
   }
 
-  async initializeTelegram() {
+  getOwnerJid() {
+    return getOwnerJidFromConfig(this.config);
+  }
+
+  async getOwnerDisplayName(ownerJid) {
+    const fallback = this.config.ownerNumber || ownerJid?.split('@')[0] || 'owner';
     try {
-      this.logger.info('Initializing Telegram...');
-      const adapter = new TelegramAdapter(this.config);
-      adapter.commandRegistry = this.commandRegistry;
-      
-      adapter.on('message', (messageContext) => {
-        // Prevent duplicate execution of the same message ID if it's not an edit
-        // or handle it within handleMessage logic
-        this.handleMessage(messageContext);
-      });
+      const latestOwnerMessage = memoryStore.getLatestMessage('whatsapp', ownerJid);
+      if (latestOwnerMessage?.pushName) {
+        return latestOwnerMessage.pushName;
+      }
+    } catch {}
+    return fallback;
+  }
 
-      adapter.on('ready', () => {
-        this.logger.info('Telegram is ready');
-        this.emit('platform:ready', 'telegram');
-      });
+  async notifyOwnerStartup() {
+    const whatsapp = this.getAdapter('whatsapp');
+    const ownerJid = this.getOwnerJid();
+    if (!whatsapp || !ownerJid) return;
 
-      await adapter.connect();
-      this.adapters.set('telegram', adapter);
+    let isRestart = false;
+    try {
+      isRestart = fs.existsSync(RESTART_NOTICE_PATH);
+    } catch {}
+
+    const ownerLabel = await this.getOwnerDisplayName(ownerJid);
+    const message = isRestart
+      ? `Hi ${ownerLabel}, i have restarted`
+      : `Hi ${ownerLabel}, i have started`;
+
+    try {
+      await whatsapp.sendMessage(ownerJid, message);
+      if (isRestart && fs.existsSync(RESTART_NOTICE_PATH)) {
+        fs.unlinkSync(RESTART_NOTICE_PATH);
+      }
     } catch (error) {
-      this.logger.error({ error }, 'Failed to initialize Telegram');
+      this.logger.warn({ error }, 'Failed to send startup message to owner');
     }
   }
 
   async handleMessage(messageContext) {
+    messageContext.bot = this;
+
     this.logger.debug({
       platform: messageContext.platform,
       command: messageContext.command,

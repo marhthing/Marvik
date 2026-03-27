@@ -16,6 +16,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import memoryStore from '../utils/memory.js';
 import readline from 'readline';
+import { upsertKnownChat, upsertKnownContact, mapLidToJid, dedupeKnownEntities } from '../utils/knownEntities.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -36,6 +37,137 @@ export default class WhatsAppAdapter extends BaseAdapter {
     this.phoneNumber = null;
     this.isFirstPairingAttempt = true;
     this.authFailures = 0;
+    this.contacts = new Map();
+  }hmm
+
+  normalizeNumber(value) {
+    return (value || '').replace(/[^\d]/g, '');
+  }
+
+  getContextInfo(message = {}) {
+    return message?.extendedTextMessage?.contextInfo ||
+           message?.imageMessage?.contextInfo ||
+           message?.videoMessage?.contextInfo ||
+           message?.stickerMessage?.contextInfo ||
+           message?.audioMessage?.contextInfo ||
+           message?.documentMessage?.contextInfo ||
+           message?.buttonsResponseMessage?.contextInfo ||
+           message?.listResponseMessage?.contextInfo ||
+           null;
+  }
+
+  extractText(message = {}) {
+    return message?.conversation ||
+           message?.extendedTextMessage?.text ||
+           message?.imageMessage?.caption ||
+           message?.videoMessage?.caption ||
+           message?.documentMessage?.caption ||
+           message?.buttonsResponseMessage?.selectedDisplayText ||
+           message?.listResponseMessage?.title ||
+           message?.templateButtonReplyMessage?.selectedDisplayText ||
+           message?.interactiveResponseMessage?.body?.text ||
+           '';
+  }
+
+  extractMedia(message = {}, raw) {
+    if (message?.imageMessage) return { type: 'image', mimetype: message.imageMessage.mimetype, raw };
+    if (message?.videoMessage) {
+      return {
+        type: message.videoMessage.gifPlayback ? 'gif' : 'video',
+        mimetype: message.videoMessage.mimetype,
+        raw
+      };
+    }
+    if (message?.audioMessage) return { type: message.audioMessage.ptt ? 'ptt' : 'audio', mimetype: message.audioMessage.mimetype, raw };
+    if (message?.documentMessage) return { type: 'document', mimetype: message.documentMessage.mimetype, fileName: message.documentMessage.fileName, raw };
+    if (message?.stickerMessage) return { type: 'sticker', mimetype: message.stickerMessage.mimetype, raw };
+    return null;
+  }
+
+  getMentions(message = {}) {
+    const contextInfo = this.getContextInfo(message);
+    return Array.isArray(contextInfo?.mentionedJid) ? [...new Set(contextInfo.mentionedJid)] : [];
+  }
+
+  mergeEditedMessageWithOriginalContext(editedMessage = {}, originalMessage = {}) {
+    const editedType = editedMessage ? Object.keys(editedMessage)[0] : null;
+    const originalType = originalMessage ? Object.keys(originalMessage)[0] : null;
+    const originalContextInfo = this.getContextInfo(originalMessage);
+    const editedText = this.extractText(editedMessage);
+
+    if (!editedType) {
+      return editedMessage;
+    }
+
+    const editedPayload = editedMessage[editedType];
+    const originalPayload = editedType && originalMessage ? originalMessage[editedType] : null;
+
+    if (editedPayload && typeof editedPayload === 'object') {
+      const mergedPayload = { ...originalPayload, ...editedPayload };
+      if (originalContextInfo && !editedPayload?.contextInfo) {
+        mergedPayload.contextInfo = originalContextInfo;
+      }
+      return { [editedType]: mergedPayload };
+    }
+
+    if (editedText && originalContextInfo) {
+      return {
+        extendedTextMessage: {
+          text: editedText,
+          contextInfo: originalContextInfo
+        }
+      };
+    }
+
+    if (editedType === 'extendedTextMessage' && originalType === 'conversation') {
+      return {
+        extendedTextMessage: {
+          text: editedPayload?.text || '',
+          ...(editedPayload || {})
+        }
+      };
+    }
+
+    return editedMessage;
+  }
+
+  buildQuotedMessage(contextInfo, chatId, quotedMsg, quotedSenderId) {
+    if (!contextInfo?.quotedMessage) return null;
+
+    let quotedType = 'text';
+    let quotedText = this.extractText(quotedMsg);
+    const quotedMedia = this.extractMedia(quotedMsg, {
+      key: {
+        remoteJid: chatId,
+        id: contextInfo.stanzaId,
+        participant: contextInfo.participant
+      },
+      message: quotedMsg
+    });
+
+    if (quotedMsg.imageMessage) quotedType = 'image';
+    else if (quotedMsg.videoMessage) quotedType = quotedMsg.videoMessage.gifPlayback ? 'gif' : 'video';
+    else if (quotedMsg.audioMessage) quotedType = quotedMsg.audioMessage.ptt ? 'ptt' : 'audio';
+    else if (quotedMsg.stickerMessage) quotedType = 'sticker';
+    else if (quotedMsg.documentMessage) quotedType = 'document';
+
+    return {
+      messageId: contextInfo.stanzaId,
+      senderId: quotedSenderId,
+      type: quotedType,
+      text: quotedText,
+      media: quotedMedia,
+      mentions: Array.isArray(contextInfo.mentionedJid) ? contextInfo.mentionedJid : [],
+      message: quotedMsg,
+      raw: {
+        key: {
+          remoteJid: chatId,
+          id: contextInfo.stanzaId,
+          participant: contextInfo.participant
+        },
+        message: quotedMsg
+      }
+    };
   }
 
   getWhatsAppSessionPath() {
@@ -148,6 +280,26 @@ export default class WhatsAppAdapter extends BaseAdapter {
   setupEventHandlers(saveCreds, sessionPath) {
     sessionPath = this.getWhatsAppSessionPath();
     this.client.ev.on('creds.update', saveCreds);
+
+    this.client.ev.on('contacts.upsert', (contacts = []) => {
+      for (const contact of contacts) {
+        const jid = contact?.id || contact?.jid;
+        if (!jid) continue;
+        const prev = this.contacts.get(jid) || {};
+        this.contacts.set(jid, { ...prev, ...contact });
+        upsertKnownContact(jid, contact);
+      }
+    });
+
+    this.client.ev.on('contacts.update', (contacts = []) => {
+      for (const contact of contacts) {
+        const jid = contact?.id || contact?.jid;
+        if (!jid) continue;
+        const prev = this.contacts.get(jid) || {};
+        this.contacts.set(jid, { ...prev, ...contact });
+        upsertKnownContact(jid, contact);
+      }
+    });
 
     this.client.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
@@ -269,15 +421,20 @@ export default class WhatsAppAdapter extends BaseAdapter {
 
         if (isProtocolEdit || isDirectEdit) {
           try {
+            const originalMsg = memoryStore.getMessage('whatsapp', key.remoteJid, key.id);
             const editedMsg = isProtocolEdit 
               ? (messageUpdate.message.protocolMessage.editedMessage || messageUpdate.message.protocolMessage)
               : messageUpdate.message.editedMessage;
             
             if (editedMsg) {
+              const mergedMessage = this.mergeEditedMessageWithOriginalContext(
+                editedMsg.message || editedMsg,
+                originalMsg?.message || {}
+              );
               const msg = {
                 key,
-                message: editedMsg.message || editedMsg,
-                pushName: update.pushName || 'User',
+                message: mergedMessage,
+                pushName: update.pushName || originalMsg?.pushName || 'User',
                 messageTimestamp: update.messageTimestamp || Math.floor(Date.now() / 1000)
               };
               
@@ -341,6 +498,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
     const isGroup = msg.key.remoteJid?.endsWith('@g.us');
     const chatId = msg.key.remoteJid;
     let senderId = isGroup ? msg.key.participant : msg.key.remoteJid;
+    const originalSenderId = senderId;
 
     if (isGroup && senderId?.endsWith('@lid')) {
         if (msg.key.participantAlt) senderId = msg.key.participantAlt;
@@ -356,21 +514,21 @@ export default class WhatsAppAdapter extends BaseAdapter {
     }
     
     senderId = jidNormalizedUser(senderId);
-
-    // Normalize LID to JID if possible for isOwner check
-    let normalizedSenderForOwnerCheck = senderId;
-    if (senderId.endsWith('@lid')) {
-        const pn = await this.client.signalRepository.lidMapping.getPNForLID(senderId);
-        if (pn) {
-          normalizedSenderForOwnerCheck = jidNormalizedUser(pn);
-          this.logger.debug({ senderId, resolvedPn: normalizedSenderForOwnerCheck }, 'Resolved LID for owner check');
-        }
+    if (originalSenderId?.endsWith('@lid') && senderId?.endsWith('@s.whatsapp.net')) {
+      mapLidToJid(originalSenderId, senderId);
+    } else if (msg.key.participant && msg.key.participant.endsWith('@lid') && senderId?.endsWith('@s.whatsapp.net')) {
+      mapLidToJid(msg.key.participant, senderId);
     }
 
-    let text = msg.message?.conversation ||
-               msg.message?.extendedTextMessage?.text ||
-               msg.message?.imageMessage?.caption ||
-               msg.message?.videoMessage?.caption || '';
+    upsertKnownChat(chatId, { isGroup });
+    if (senderId) {
+      upsertKnownContact(senderId, { name: msg.pushName || senderId.split('@')[0] });
+    }
+    dedupeKnownEntities();
+
+    const text = this.extractText(msg.message);
+    const media = this.extractMedia(msg.message, msg);
+    const mentions = this.getMentions(msg.message);
 
     let command = null;
     let args = [];
@@ -386,12 +544,9 @@ export default class WhatsAppAdapter extends BaseAdapter {
     if (msg.key.fromMe && this.client?.user?.id) {
       trueSenderId = this.client.user.id;
     }
-    // Remove WhatsApp suffixes like :90
     const cleanSender = trueSenderId.split(':')[0];
-    // Compare only digits for owner check
-    const normalizeNumber = num => (num || '').replace(/[^\d]/g, '');
-    const senderNum = normalizeNumber(cleanSender.split('@')[0]);
-    const ownerNum = normalizeNumber(this.config.ownerNumber);
+    const senderNum = this.normalizeNumber(cleanSender.split('@')[0]);
+    const ownerNum = this.normalizeNumber(this.config.ownerNumber);
     const isOwner = senderNum === ownerNum;
 
     let isAdmin = false;
@@ -432,14 +587,8 @@ export default class WhatsAppAdapter extends BaseAdapter {
       }
     }
 
-    // Parse quoted message if present
     let quoted = null;
-    const contextInfo = msg.message?.extendedTextMessage?.contextInfo ||
-                        msg.message?.imageMessage?.contextInfo ||
-                        msg.message?.videoMessage?.contextInfo ||
-                        msg.message?.stickerMessage?.contextInfo ||
-                        msg.message?.audioMessage?.contextInfo ||
-                        msg.message?.documentMessage?.contextInfo;
+    const contextInfo = this.getContextInfo(msg.message);
     
     if (contextInfo?.quotedMessage) {
       const quotedMsg = contextInfo.quotedMessage;
@@ -455,44 +604,8 @@ export default class WhatsAppAdapter extends BaseAdapter {
       if (quotedSenderId) {
         quotedSenderId = jidNormalizedUser(quotedSenderId);
       }
-      
-      // Determine quoted message type
-      let quotedType = 'text';
-      let quotedText = '';
-      
-      if (quotedMsg.imageMessage) {
-        quotedType = 'image';
-        quotedText = quotedMsg.imageMessage.caption || '';
-      } else if (quotedMsg.videoMessage) {
-        quotedType = 'video';
-        quotedText = quotedMsg.videoMessage.caption || '';
-      } else if (quotedMsg.audioMessage) {
-        quotedType = 'audio';
-      } else if (quotedMsg.stickerMessage) {
-        quotedType = 'sticker';
-      } else if (quotedMsg.documentMessage) {
-        quotedType = 'document';
-      } else if (quotedMsg.conversation) {
-        quotedText = quotedMsg.conversation;
-      } else if (quotedMsg.extendedTextMessage) {
-        quotedText = quotedMsg.extendedTextMessage.text || '';
-      }
-      
-      quoted = {
-        messageId: contextInfo.stanzaId,
-        senderId: quotedSenderId,
-        type: quotedType,
-        text: quotedText,
-        message: quotedMsg,
-        raw: {
-          key: {
-            remoteJid: chatId,
-            id: contextInfo.stanzaId,
-            participant: contextInfo.participant
-          },
-          message: quotedMsg
-        }
-      };
+
+      quoted = this.buildQuotedMessage(contextInfo, chatId, quotedMsg, quotedSenderId);
     }
 
     return new MessageContext({
@@ -505,6 +618,8 @@ export default class WhatsAppAdapter extends BaseAdapter {
       text,
       command,
       args,
+      mentions,
+      media,
       isGroup,
       isOwner,
       isAdmin,
@@ -516,8 +631,20 @@ export default class WhatsAppAdapter extends BaseAdapter {
 
   async sendMessage(chatId, text, options = {}) {
     const message = { text };
-    if (options.quoted) message.quoted = { key: { id: options.quoted, remoteJid: chatId } };
-    const sent = await this.client.sendMessage(chatId, message);
+    if (Array.isArray(options.mentions) && options.mentions.length > 0) {
+      message.mentions = options.mentions;
+    }
+    if (options.linkPreview === false) {
+      message.linkPreview = false;
+    }
+
+    const sendOptions = {};
+    const quotedMessage = this.normalizeQuotedMessage(chatId, options.quoted);
+    if (quotedMessage) {
+      sendOptions.quoted = quotedMessage;
+    }
+
+    const sent = await this.client.sendMessage(chatId, message, sendOptions);
     if (sent?.key?.id) memoryStore.saveMessage('whatsapp', chatId, sent.key.id, sent);
     return sent;
   }
@@ -525,6 +652,32 @@ export default class WhatsAppAdapter extends BaseAdapter {
   async sendReaction(chatId, messageKey, emoji) {
     const key = typeof messageKey === 'object' ? messageKey : { id: messageKey, remoteJid: chatId, fromMe: false };
     return await this.client.sendMessage(chatId, { react: { text: emoji, key: key } });
+  }
+
+  async sendPresence(chatId, type = 'composing') {
+    // Baileys supports socket-level and chat-level presence updates.
+    // 'available'/'unavailable' can be sent without a jid; others require a chat jid.
+    if (!this.client) return;
+    const normalizedType = type || 'composing';
+    if ((normalizedType === 'available' || normalizedType === 'unavailable') && !chatId) {
+      return await this.client.sendPresenceUpdate(normalizedType);
+    }
+    return await this.client.sendPresenceUpdate(normalizedType, chatId);
+  }
+
+  async markRead(chatId, messageId, messageKey = null) {
+    if (!this.client || !messageId || !chatId) return;
+    const key = {
+      remoteJid: chatId,
+      id: messageId,
+      fromMe: messageKey?.fromMe || false,
+      participant: messageKey?.participant
+    };
+    try {
+      await this.client.readMessages([key]);
+    } catch (e) {
+      // Ignore read errors to avoid blocking message flow
+    }
   }
 
   async deleteMessage(chatId, messageId) {
@@ -620,6 +773,13 @@ export default class WhatsAppAdapter extends BaseAdapter {
     }
   }
 
+  getContacts() {
+    if (this.contacts && this.contacts.size) {
+      return Object.fromEntries(this.contacts.entries());
+    }
+    return this.client?.contacts || {};
+  }
+
   async sendMedia(chatId, mediaBuffer, mediaType, options = {}) {
     // Support both string and object for mediaType
     let type = mediaType;
@@ -630,6 +790,10 @@ export default class WhatsAppAdapter extends BaseAdapter {
       if (mediaType.mimetype) mimetype = mediaType.mimetype;
     }
     
+    if (!type && options && typeof options === 'object' && !Array.isArray(options)) {
+      type = options.type || options.mediaType || options.kind;
+    }
+
     if (!type) {
       throw new Error('Media type is required. Received: ' + JSON.stringify(mediaType));
     }
@@ -656,10 +820,57 @@ export default class WhatsAppAdapter extends BaseAdapter {
     } else {
       throw new Error('Unsupported media type: ' + type);
     }
-    if (options.quoted) message.quoted = { key: { id: options.quoted, remoteJid: chatId } };
-    const sent = await this.client.sendMessage(chatId, message);
+    if (Array.isArray(options.mentions) && options.mentions.length > 0) {
+      message.mentions = options.mentions;
+    }
+    const sendOptions = {};
+    const quotedMessage = this.normalizeQuotedMessage(chatId, options.quoted);
+    if (quotedMessage) {
+      sendOptions.quoted = quotedMessage;
+    }
+    const sent = await this.client.sendMessage(chatId, message, sendOptions);
     if (sent?.key?.id) memoryStore.saveMessage('whatsapp', chatId, sent.key.id, sent);
     return sent;
+  }
+
+  normalizeQuotedMessage(chatId, quoted) {
+    if (!quoted) return null;
+
+    if (quoted.key && quoted.message) {
+      return quoted;
+    }
+
+    if (quoted.raw?.key && quoted.raw?.message) {
+      return quoted.raw;
+    }
+
+    if (quoted.messageKey) {
+      return this.normalizeQuotedMessage(chatId, quoted.messageKey);
+    }
+
+    if (quoted.id || quoted.remoteJid || quoted.participant || quoted.fromMe !== undefined) {
+      const key = {
+        remoteJid: quoted.remoteJid || chatId,
+        id: quoted.id,
+        fromMe: quoted.fromMe || false,
+        participant: quoted.participant
+      };
+      const storedMessage = memoryStore.getMessage('whatsapp', key.remoteJid, key.id);
+      if (storedMessage?.key && storedMessage?.message) {
+        return storedMessage;
+      }
+      return { key, message: undefined };
+    }
+
+    if (typeof quoted === 'string') {
+      const storedMessage = memoryStore.getMessage('whatsapp', chatId, quoted);
+      if (storedMessage?.key && storedMessage?.message) {
+        return storedMessage;
+      }
+      return { key: { id: quoted, remoteJid: chatId, fromMe: false }, message: undefined };
+    }
+
+    return null;
   }
 
   async setAlwaysOnline(value) {
@@ -682,5 +893,16 @@ export default class WhatsAppAdapter extends BaseAdapter {
     } catch (e) {
       throw new Error('Failed to edit message: ' + e.message);
     }
+  }
+
+  async disconnect() {
+    if (!this.client) return;
+    try {
+      this.client.ws?.close?.();
+      this.client.end?.(new Error('Bot shutdown'));
+    } catch (error) {
+      this.logger.warn({ error }, 'WhatsApp socket close failed');
+    }
+    this.client = null;
   }
 }

@@ -14,6 +14,10 @@ export default {
       description: 'Convert text to speech',
       usage: 'Reply to a message with .tts or use .tts <text>. Use .tts voice to see available voices. Use .tts <voice> <text> to specify a voice.',
       category: 'audio',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         try {
           const availableVoices = ['autumn', 'diana', 'hannah', 'austin', 'daniel', 'troy'];
@@ -117,6 +121,10 @@ export default {
       description: 'Convert audio to text',
       usage: 'Reply to an audio/voice note with .stt',
       category: 'audio',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         try {
           const message = ctx.quoted || ctx;
@@ -152,6 +160,10 @@ export default {
       description: 'Ask questions about images or describe them using Groq Vision',
       usage: 'Send an image with .ask <question> as caption or reply to an image with .ask <question>',
       category: 'audio',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         try {
           let question = ctx.args.join(' ').trim();
@@ -215,16 +227,5 @@ export default {
         }
       }
     }
-  ],
-  // Auto-transcribe logic could go here if requested, but for now we follow the .tts/reply trigger
-    async onMessage(ctx) {
-      if (!ctx.body) return;
-      const cmd = ctx.body.toLowerCase().trim();
-      if (cmd === '.tts' && ctx.quoted) {
-        return this.commands.find(c => c.name === 'tts').execute(ctx);
-      }
-      if (cmd === '.stt' && ctx.quoted) {
-        return this.commands.find(c => c.name === 'stt').execute(ctx);
-      }
-    }
+  ]
 };

@@ -2,7 +2,7 @@ import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 
-dotenv.config();
+dotenv.config({ override: true });
 
 // Auto-fill missing .env variables with defaults (template)
 const envPath = path.resolve(process.cwd(), '.env');
@@ -11,8 +11,6 @@ const requiredVars = {
   PREFIX: '.',
   OWNER_NUMBER: '',
   ENABLE_WHATSAPP: 'true',
-  ENABLE_TELEGRAM: 'false',
-  TELEGRAM_BOT_TOKEN: '',
   LOG_LEVEL: 'info',
   MAX_COMMAND_COOLDOWN: '3000',
   STICKER_PACK: 'MATDEV Bot',
@@ -44,9 +42,10 @@ for (const [key, def] of Object.entries(requiredVars)) {
 
 if (changed || !fs.existsSync(envPath)) {
   fs.writeFileSync(envPath, envContent.trim() + '\n');
-  // If .env was just created or updated, reload env variables
-  dotenv.config({ override: true });
 }
+
+// Always reload env variables from .env, overriding any system env
+dotenv.config({ override: true });
 
 export default {
   // Bot settings
@@ -58,13 +57,7 @@ export default {
 
   // Platform toggles
   platforms: {
-    whatsapp: (typeof process.env.ENABLE_WHATSAPP !== 'undefined' ? process.env.ENABLE_WHATSAPP : requiredVars.ENABLE_WHATSAPP) === 'true',
-    telegram: (typeof process.env.ENABLE_TELEGRAM !== 'undefined' ? process.env.ENABLE_TELEGRAM : requiredVars.ENABLE_TELEGRAM) === 'true'
-  },
-
-  // Telegram settings
-  telegram: {
-    token: process.env.TELEGRAM_BOT_TOKEN || ''
+    whatsapp: (typeof process.env.ENABLE_WHATSAPP !== 'undefined' ? process.env.ENABLE_WHATSAPP : requiredVars.ENABLE_WHATSAPP) === 'true'
   },
 
   // Sticker defaults

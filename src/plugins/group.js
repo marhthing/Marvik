@@ -1,55 +1,9 @@
 /**
  * Group management plugin
  */
-import { jidNormalizedUser } from '@whiskeysockets/baileys';
-
-/**
- * Find participant in group using robust matching (supports both LID and PN formats)
- */
-function findParticipant(participants, userId, userLid) {
-  const userPhone = userId ? userId.split('@')[0].replace(/[^\d]/g, '') : null;
-  const normalizedUserId = userId ? jidNormalizedUser(userId) : null;
-  const normalizedUserLid = userLid ? jidNormalizedUser(userLid) : null;
-  
-  return participants.find(p => {
-    const pId = jidNormalizedUser(p.id);
-    const pLid = p.lid ? jidNormalizedUser(p.lid) : null;
-    const pPhoneFromId = p.id ? p.id.split('@')[0].replace(/[^\d]/g, '') : null;
-    const pPhoneFromField = p.phoneNumber ? p.phoneNumber.replace(/[^\d]/g, '') : null;
-    
-    // Match by normalized JID
-    if (pId === normalizedUserId) return true;
-    // Match by LID
-    if (pLid === normalizedUserId) return true;
-    if (normalizedUserLid && pId === normalizedUserLid) return true;
-    if (normalizedUserLid && pLid === normalizedUserLid) return true;
-    // Match by phone number
-    if (pPhoneFromId && userPhone && pPhoneFromId === userPhone) return true;
-    if (pPhoneFromField && userPhone && pPhoneFromField === userPhone) return true;
-    
-    return false;
-  });
-}
-
-/**
- * Find participant by phone number and return their actual group ID (LID format)
- */
-function findParticipantByPhone(participants, phoneNumber) {
-  const cleanPhone = phoneNumber.replace(/[^\d]/g, '');
-  
-  return participants.find(p => {
-    // Check phoneNumber field (present when id is LID)
-    if (p.phoneNumber) {
-      const pPhone = p.phoneNumber.replace(/[^\d@s.whatsapp.net]/g, '').replace('@swhatsappnet', '');
-      if (pPhone === cleanPhone) return true;
-    }
-    // Check if id itself contains the phone number (PN format)
-    const pPhoneFromId = p.id ? p.id.split('@')[0].replace(/[^\d]/g, '') : null;
-    if (pPhoneFromId === cleanPhone) return true;
-    
-    return false;
-  });
-}
+import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
+import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
+import { findParticipant, normalizeWhatsAppJid, resolveParticipantFromContext } from '../utils/whatsappJid.js';
 
 export default {
   name: 'group',
@@ -63,8 +17,10 @@ export default {
       description: 'Tag everyone or admins in the group',
       usage: '.tag [admin]',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         const metadata = await ctx.platformAdapter.client.groupMetadata(ctx.chatId);
         const participants = metadata.participants;
@@ -77,7 +33,7 @@ export default {
         
         const mentions = [];
         const tagList = targetParticipants.map(p => {
-          const jid = jidNormalizedUser(p.id);
+          const jid = normalizeWhatsAppJid(p.id);
           mentions.push(jid);
           return `@${jid.split('@')[0]}`;
         }).join(' ');
@@ -93,8 +49,10 @@ export default {
       description: 'Update group description',
       usage: '.gbio <text>',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         if (!ctx.args[0]) return ctx.reply('Please provide a new group bio.');
         try {
@@ -110,21 +68,20 @@ export default {
       description: 'Update group profile picture',
       usage: 'Reply to an image with .gpp',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
-        const quotedImage = ctx.quoted?.message?.imageMessage || 
-                          ctx.raw?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
-        
-        if (!quotedImage) {
+        const media = getQuotedMediaTarget(ctx, ['image']);
+        if (!media) {
           return ctx.reply('Please reply to an image with .gpp');
         }
         try {
-          const buffer = await ctx.platformAdapter.downloadMedia({
-            raw: {
-              message: { imageMessage: quotedImage }
-            }
-          });
+          const buffer = await downloadMediaBuffer(ctx, media);
+          if (!hasValidMediaHeader(buffer)) {
+            return ctx.reply('❌ The downloaded image appears corrupted or unsupported.');
+          }
           await ctx.platformAdapter.client.updateProfilePicture(ctx.chatId, buffer);
           await ctx.reply('✅ Group profile picture updated.');
         } catch (error) {
@@ -137,8 +94,10 @@ export default {
       description: 'Update group name',
       usage: '.gname <text>',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         if (!ctx.args[0]) return ctx.reply('Please provide a new group name.');
         try {
@@ -154,11 +113,14 @@ export default {
       description: 'Add a user to the group',
       usage: '.add 234...',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         if (!ctx.args[0]) return ctx.reply('Please provide a phone number to add.');
-        const user = ctx.args[0].replace(/[^\d]/g, '') + '@s.whatsapp.net';
+        const user = normalizeWhatsAppJid(ctx.args[0]);
+        if (!user) return ctx.reply('Please provide a valid WhatsApp number or JID.');
         try {
           await ctx.platformAdapter.client.groupParticipantsUpdate(ctx.chatId, [user], 'add');
           await ctx.reply('✅ User added to group.');
@@ -172,8 +134,10 @@ export default {
       description: 'Get group invite link',
       usage: '.link',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         try {
           const code = await ctx.platformAdapter.client.groupInviteCode(ctx.chatId);
@@ -188,8 +152,10 @@ export default {
       description: 'Promote a user to admin',
       usage: '.promote @user',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         const botId = ctx.platformAdapter.client.user?.id || ctx.platformAdapter.client.user?.jid;
         const botLid = ctx.platformAdapter.client.user?.lid;
@@ -201,24 +167,9 @@ export default {
           return ctx.reply('I am not an admin in this group.');
         }
         
-        let targetParticipant;
-        
-        if (ctx.quoted) {
-          // Find participant by sender ID from quoted message
-          targetParticipant = findParticipant(groupMetadata.participants, ctx.quoted.senderId, null);
-        } else if (ctx.mentions && ctx.mentions.length > 0) {
-          // Find participant by mention
-          targetParticipant = findParticipant(groupMetadata.participants, ctx.mentions[0], null);
-        } else if (ctx.args[0]) {
-          // Find participant by phone number
-          const phoneNumber = ctx.args[0].replace(/[^\d]/g, '');
-          targetParticipant = findParticipantByPhone(groupMetadata.participants, phoneNumber);
-        } else {
-          return ctx.reply('Please mention a user or reply to their message.');
-        }
-
+        const targetParticipant = await resolveParticipantFromContext(ctx, groupMetadata);
         if (!targetParticipant) {
-          return ctx.reply('User not found in this group.');
+          return ctx.reply('Please mention a user or reply to their message.');
         }
 
         try {
@@ -235,8 +186,10 @@ export default {
       description: 'Demote a user from admin',
       usage: '.demote @user',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         const botId = ctx.platformAdapter.client.user?.id || ctx.platformAdapter.client.user?.jid;
         const botLid = ctx.platformAdapter.client.user?.lid;
@@ -247,21 +200,9 @@ export default {
           return ctx.reply('I am not an admin in this group.');
         }
         
-        let targetParticipant;
-        
-        if (ctx.quoted) {
-          targetParticipant = findParticipant(groupMetadata.participants, ctx.quoted.senderId, null);
-        } else if (ctx.mentions && ctx.mentions.length > 0) {
-          targetParticipant = findParticipant(groupMetadata.participants, ctx.mentions[0], null);
-        } else if (ctx.args[0]) {
-          const phoneNumber = ctx.args[0].replace(/[^\d]/g, '');
-          targetParticipant = findParticipantByPhone(groupMetadata.participants, phoneNumber);
-        } else {
-          return ctx.reply('Please mention a user or reply to their message.');
-        }
-
+        const targetParticipant = await resolveParticipantFromContext(ctx, groupMetadata);
         if (!targetParticipant) {
-          return ctx.reply('User not found in this group.');
+          return ctx.reply('Please mention a user or reply to their message.');
         }
 
         // Check if target is superadmin - only superadmins can demote superadmins
@@ -283,8 +224,10 @@ export default {
       description: 'Remove a user from the group',
       usage: '.kick @user',
       category: 'group',
+      ownerOnly: false,
       groupOnly: true,
       adminOnly: true,
+      cooldown: 3,
       async execute(ctx) {
         const botId = ctx.platformAdapter.client.user?.id || ctx.platformAdapter.client.user?.jid;
         const botLid = ctx.platformAdapter.client.user?.lid;
@@ -295,21 +238,9 @@ export default {
           return ctx.reply('I am not an admin in this group.');
         }
         
-        let targetParticipant;
-        
-        if (ctx.quoted) {
-          targetParticipant = findParticipant(groupMetadata.participants, ctx.quoted.senderId, null);
-        } else if (ctx.mentions && ctx.mentions.length > 0) {
-          targetParticipant = findParticipant(groupMetadata.participants, ctx.mentions[0], null);
-        } else if (ctx.args[0]) {
-          const phoneNumber = ctx.args[0].replace(/[^\d]/g, '');
-          targetParticipant = findParticipantByPhone(groupMetadata.participants, phoneNumber);
-        } else {
-          return ctx.reply('Please mention a user or reply to their message.');
-        }
-
+        const targetParticipant = await resolveParticipantFromContext(ctx, groupMetadata);
         if (!targetParticipant) {
-          return ctx.reply('User not found in this group.');
+          return ctx.reply('Please mention a user or reply to their message.');
         }
 
         if (targetParticipant.admin === 'superadmin') {
@@ -329,8 +260,10 @@ export default {
         description: 'Open or close group chat',
         usage: '.group open/close',
         category: 'group',
+        ownerOnly: false,
         groupOnly: true,
         adminOnly: true,
+        cooldown: 3,
         async execute(ctx) {
             const action = ctx.args[0]?.toLowerCase();
             if (action === 'open') {
@@ -349,8 +282,10 @@ export default {
         description: 'Open group chat for everyone',
         usage: '.open',
         category: 'group',
+        ownerOnly: false,
         groupOnly: true,
         adminOnly: true,
+        cooldown: 3,
         async execute(ctx) {
             try {
                 await ctx.platformAdapter.client.groupSettingUpdate(ctx.chatId, 'not_announcement');
@@ -365,8 +300,10 @@ export default {
         description: 'Close group chat (admins only)',
         usage: '.close',
         category: 'group',
+        ownerOnly: false,
         groupOnly: true,
         adminOnly: true,
+        cooldown: 3,
         async execute(ctx) {
             try {
                 await ctx.platformAdapter.client.groupSettingUpdate(ctx.chatId, 'announcement');

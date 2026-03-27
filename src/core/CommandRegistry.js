@@ -1,6 +1,6 @@
 import logger from '../utils/logger.js';
-import fs from 'fs';
-import path from 'path';
+import { getBooleanEnv } from '../utils/envStore.js';
+import { readStorage } from '../utils/storageStore.js';
 
 /**
  * Command Registry
@@ -12,7 +12,7 @@ export default class CommandRegistry {
     this.commands = new Map();
     this.cooldowns = new Map();
     this.logger = logger.child({ component: 'CommandRegistry' });
-    this.messageHandlers = [];
+    this.messageHandlers = new Set();
   }
 
   /**
@@ -55,14 +55,23 @@ export default class CommandRegistry {
    * @param {function} fn - Handler function (ctx) => {}
    */
   registerMessageHandler(fn) {
-    this.messageHandlers.push(fn);
+    this.messageHandlers.add(fn);
+    return () => this.unregisterMessageHandler(fn);
+  }
+
+  /**
+   * Unregister a previously registered message handler
+   * @param {function} fn
+   */
+  unregisterMessageHandler(fn) {
+    return this.messageHandlers.delete(fn);
   }
 
   /**
    * Get all registered message handlers
    */
   getMessageHandlers() {
-    return this.messageHandlers;
+    return Array.from(this.messageHandlers);
   }
 
   /**
@@ -91,15 +100,7 @@ export default class CommandRegistry {
    */
   async execute(messageContext) {
     // Check BOT_REACTIONS in .env
-    let botReactions = 'on';
-    try {
-      const envPath = path.resolve(process.cwd(), '.env');
-      if (fs.existsSync(envPath)) {
-        const envContent = fs.readFileSync(envPath, 'utf-8');
-        const match = envContent.match(/^BOT_REACTIONS=(on|off)/m);
-        if (match) botReactions = match[1];
-      }
-    } catch {}
+    const botReactions = getBooleanEnv('BOT_REACTIONS', true) ? 'on' : 'off';
 
     if (!messageContext.command) {
       this.logger.info({ text: messageContext.text }, '[CommandRegistry] No command parsed from message');
@@ -122,38 +123,31 @@ export default class CommandRegistry {
     const normalizeJid = jid => (jid || '').split('@')[0].replace(/\D/g, '');
     if (isOwner || isFromMe) {
       allow = true;
-    } else if (messageContext.platform === 'telegram') {
-      allow = true;
     } else {
       // Check allowed users/groups from storage.json
       try {
-        const fs = await import('fs');
-        const path = await import('path');
-        const storagePath = path.resolve('storage', 'storage.json');
-        if (fs.existsSync(storagePath)) {
-          const storage = JSON.parse(fs.readFileSync(storagePath, 'utf-8'));
-          const allowed = storage.allowedCommands || {};
-          // Collect all possible JIDs to check (raw, alt, chatId, and normalized forms)
-          const userJidsToCheck = [userJid];
-          if (messageContext.raw?.key?.remoteJidAlt) {
-            userJidsToCheck.push(messageContext.raw.key.remoteJidAlt);
-          }
-          // Always include chatId for allow-list checks (not just for groups)
-          if (messageContext.chatId) {
-            userJidsToCheck.push(messageContext.chatId);
-          }
-          // Add normalized digit-only forms
-          const normalizedJids = userJidsToCheck.map(normalizeJid);
-          // Check if any allowed JID (raw or normalized) matches
-          if (Array.isArray(allowed[command.name])) {
-            for (const allowedJid of allowed[command.name]) {
-              if (
-                userJidsToCheck.includes(allowedJid) ||
-                normalizedJids.includes(normalizeJid(allowedJid))
-              ) {
-                allow = true;
-                break;
-              }
+        const storage = readStorage();
+        const allowed = storage.allowedCommands || {};
+        // Collect all possible JIDs to check (raw, alt, chatId, and normalized forms)
+        const userJidsToCheck = [userJid];
+        if (messageContext.raw?.key?.remoteJidAlt) {
+          userJidsToCheck.push(messageContext.raw.key.remoteJidAlt);
+        }
+        // Always include chatId for allow-list checks (not just for groups)
+        if (messageContext.chatId) {
+          userJidsToCheck.push(messageContext.chatId);
+        }
+        // Add normalized digit-only forms
+        const normalizedJids = userJidsToCheck.map(normalizeJid);
+        // Check if any allowed JID (raw or normalized) matches
+        if (Array.isArray(allowed[command.name])) {
+          for (const allowedJid of allowed[command.name]) {
+            if (
+              userJidsToCheck.includes(allowedJid) ||
+              normalizedJids.includes(normalizeJid(allowedJid))
+            ) {
+              allow = true;
+              break;
             }
           }
         }
@@ -174,6 +168,14 @@ export default class CommandRegistry {
       }
     }
     if (!allow) {
+      if (command.ownerOnly) {
+        await messageContext.reply('This command is for the bot owner only.');
+        return;
+      }
+      if (command.adminOnly) {
+        await messageContext.reply('This command is restricted.');
+        return;
+      }
       return;
     }
     // --- END LOGIC FIX ---

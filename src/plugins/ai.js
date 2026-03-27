@@ -3,6 +3,8 @@ import { shouldReact } from '../utils/pendingActions.js';
 import fs from 'fs';
 import path from 'path';
 import fetch from 'node-fetch';
+import { extractMessageText, getQuotedMessageObject } from '../utils/messageUtils.js';
+import { readJson, writeJson } from '../utils/storageStore.js';
 
 const AIMODE_FILE = path.join(process.cwd(), 'storage', 'ai_mode.json');
 
@@ -13,14 +15,10 @@ const IMAGE_GEN_KEYWORDS = [
   'generate image', 'create image', 'make image', 'generate picture', 'create picture'
 ];
 function loadAIMode() {
-  try {
-    return JSON.parse(fs.readFileSync(AIMODE_FILE, 'utf8'));
-  } catch {
-    return {};
-  }
+  return readJson(AIMODE_FILE, {});
 }
 function saveAIMode(data) {
-  fs.writeFileSync(AIMODE_FILE, JSON.stringify(data, null, 2));
+  writeJson(AIMODE_FILE, data);
 }
 
 export default {
@@ -42,35 +40,15 @@ export default {
       async execute(ctx) {
         try {
           let question = ctx.args.join(' ');
-          let quotedMsg = null;
+          let quotedMsg = getQuotedMessageObject(ctx);
           if (!question) {
-            quotedMsg = ctx.raw?.message?.extendedTextMessage?.contextInfo?.quotedMessage ||
-                        ctx.raw?.message?.imageMessage?.contextInfo?.quotedMessage ||
-                        ctx.raw?.message?.videoMessage?.contextInfo?.quotedMessage;
             if (quotedMsg) {
-              question = quotedMsg.conversation ||
-                         quotedMsg.extendedTextMessage?.text ||
-                         quotedMsg.imageMessage?.caption ||
-                         quotedMsg.videoMessage?.caption ||
-                         quotedMsg.documentMessage?.caption ||
-                         quotedMsg.buttonsMessage?.contentText ||
-                         quotedMsg.listMessage?.description || '';
+              question = extractMessageText(quotedMsg);
             }
-          } else {
-            // If both args and quoted, combine them for context
-            quotedMsg = ctx.raw?.message?.extendedTextMessage?.contextInfo?.quotedMessage ||
-                        ctx.raw?.message?.imageMessage?.contextInfo?.quotedMessage ||
-                        ctx.raw?.message?.videoMessage?.contextInfo?.quotedMessage;
           }
           // If both question and quotedMsg, combine for AI context
           if (question && quotedMsg) {
-            let quotedText = quotedMsg.conversation ||
-                             quotedMsg.extendedTextMessage?.text ||
-                             quotedMsg.imageMessage?.caption ||
-                             quotedMsg.videoMessage?.caption ||
-                             quotedMsg.documentMessage?.caption ||
-                             quotedMsg.buttonsMessage?.contentText ||
-                             quotedMsg.listMessage?.description || '';
+            let quotedText = extractMessageText(quotedMsg);
             question = `User asked: "${question}"
 Quoted message: "${quotedText}"`;
           }

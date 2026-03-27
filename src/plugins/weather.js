@@ -14,6 +14,10 @@ export default {
       description: 'Get weather for a city',
       usage: '.weather <city>',
       category: 'utils',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         if (!ctx.args[0]) return ctx.reply('Please provide a city name.');
         const city = ctx.args.join(' ');

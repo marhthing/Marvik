@@ -1,24 +1,4 @@
-import fs from 'fs';
-import path from 'path';
-
-const storagePath = path.join(process.cwd(), 'storage', 'storage.json');
-
-// Helper to read storage
-const getStorage = () => {
-    if (!fs.existsSync(storagePath)) return {};
-    try {
-        return JSON.parse(fs.readFileSync(storagePath, 'utf8'));
-    } catch (e) {
-        return {};
-    }
-};
-
-// Helper to save storage
-const saveStorage = (data) => {
-    const dir = path.dirname(storagePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(storagePath, JSON.stringify(data, null, 2));
-};
+import { readStorage, writeStorage } from '../utils/storageStore.js';
 
 // State for spam detection (memory only, reset on restart)
 const messageHistory = new Map(); 
@@ -36,24 +16,27 @@ export default {
         {
             name: 'antilink',
             description: 'Turn anti-link on or off',
+            usage: '.antilink on/off',
             category: 'admin',
+            ownerOnly: false,
             adminOnly: true,
             groupOnly: true,
+            cooldown: 3,
             async execute(ctx) {
                 const arg = ctx.args[0]?.toLowerCase();
-                const storage = getStorage();
+                const storage = readStorage();
                 const groupJid = ctx.chatId;
 
                 if (arg === 'on') {
                     if (!storage.antilink) storage.antilink = [];
                     if (!storage.antilink.includes(groupJid)) {
                         storage.antilink.push(groupJid);
-                        saveStorage(storage);
+                        writeStorage(storage);
                     }
                     return ctx.reply('✅ Anti-link enabled for this group.');
                 } else if (arg === 'off') {
                     storage.antilink = (storage.antilink || []).filter(id => id !== groupJid);
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply('❌ Anti-link disabled for this group.');
                 } else {
                     return ctx.reply('Usage: .antilink on/off');
@@ -63,24 +46,27 @@ export default {
         {
             name: 'antispam',
             description: 'Turn anti-spam on or off',
+            usage: '.antispam on/off',
             category: 'admin',
+            ownerOnly: false,
             adminOnly: true,
             groupOnly: true,
+            cooldown: 3,
             async execute(ctx) {
                 const arg = ctx.args[0]?.toLowerCase();
-                const storage = getStorage();
+                const storage = readStorage();
                 const groupJid = ctx.chatId;
 
                 if (arg === 'on') {
                     if (!storage.antispam) storage.antispam = [];
                     if (!storage.antispam.includes(groupJid)) {
                         storage.antispam.push(groupJid);
-                        saveStorage(storage);
+                        writeStorage(storage);
                     }
                     return ctx.reply('✅ Anti-spam enabled for this group.');
                 } else if (arg === 'off') {
                     storage.antispam = (storage.antispam || []).filter(id => id !== groupJid);
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply('❌ Anti-spam disabled for this group.');
                 } else {
                     return ctx.reply('Usage: .antispam on/off');
@@ -90,13 +76,16 @@ export default {
         {
             name: 'antiword',
             description: 'Manage anti-word list',
+            usage: '.antiword on/off | .antiword add <word> | .antiword remove <word>',
             category: 'admin',
+            ownerOnly: false,
             adminOnly: true,
             groupOnly: true,
+            cooldown: 3,
             async execute(ctx) {
                 const sub = ctx.args[0]?.toLowerCase();
                 const word = ctx.args[1]?.toLowerCase();
-                const storage = getStorage();
+                const storage = readStorage();
                 const groupJid = ctx.chatId;
 
                 if (!storage.antiword) storage.antiword = {};
@@ -104,21 +93,21 @@ export default {
 
                 if (sub === 'on') {
                     storage.antiword[groupJid].enabled = true;
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply('✅ Anti-word enabled for this group.');
                 } else if (sub === 'off') {
                     storage.antiword[groupJid].enabled = false;
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply('❌ Anti-word disabled for this group.');
                 } else if (sub === 'add' && word) {
                     if (!storage.antiword[groupJid].words.includes(word)) {
                         storage.antiword[groupJid].words.push(word);
-                        saveStorage(storage);
+                        writeStorage(storage);
                     }
                     return ctx.reply(`✅ Added "${word}" to anti-word list.`);
                 } else if (sub === 'remove' && word) {
                     storage.antiword[groupJid].words = storage.antiword[groupJid].words.filter(w => w !== word);
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply(`❌ Removed "${word}" from anti-word list.`);
                 } else {
                     return ctx.reply('Usage:\n.antiword on/off\n.antiword add <word>\n.antiword remove <word>');
@@ -128,12 +117,15 @@ export default {
         {
             name: 'warn',
             description: 'Manage warning system',
+            usage: '.warn on/off | .warn max <number> | .warn reset',
             category: 'admin',
+            ownerOnly: false,
             adminOnly: true,
             groupOnly: true,
+            cooldown: 3,
             async execute(ctx) {
                 const sub = ctx.args[0]?.toLowerCase();
-                const storage = getStorage();
+                const storage = readStorage();
                 const groupJid = ctx.chatId;
 
                 if (!storage.warnSettings) storage.warnSettings = {};
@@ -141,24 +133,24 @@ export default {
 
                 if (sub === 'on') {
                     storage.warnSettings[groupJid].enabled = true;
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply('✅ Warning system enabled.');
                 } else if (sub === 'off') {
                     storage.warnSettings[groupJid].enabled = false;
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply('❌ Warning system disabled.');
                 } else if (sub === 'max' && ctx.args[1]) {
                     const max = parseInt(ctx.args[1]);
                     if (isNaN(max)) return ctx.reply('❌ Invalid number.');
                     storage.warnSettings[groupJid].max = max;
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply(`✅ Max warnings set to ${max}.`);
                 } else if (sub === 'reset' && ctx.quoted) {
                     const target = ctx.quoted.senderId;
                     if (!storage.warnings) storage.warnings = {};
                     if (!storage.warnings[groupJid]) storage.warnings[groupJid] = {};
                     storage.warnings[groupJid][target] = 0;
-                    saveStorage(storage);
+                    writeStorage(storage);
                     return ctx.reply(`✅ Warnings reset for @${target.split('@')[0]}`, { mentions: [target] });
                 } else {
                     return ctx.reply('Usage:\n.warn on/off\n.warn max <number>\n.warn reset (reply to user)');
@@ -169,10 +161,10 @@ export default {
     async onMessage(ctx) {
         if (!ctx.isGroup) return;
 
-        const storage = getStorage();
+        const storage = readStorage();
         const sender = ctx.senderId || ctx.sender;
         const groupJid = ctx.chatId;
-        const messageText = (ctx.text || ctx.body || '').toLowerCase();
+        const messageText = (ctx.text || '').toLowerCase();
 
         if (ctx.isAdmin || ctx.isOwner) return;
 
@@ -194,7 +186,7 @@ export default {
             
             const currentWarns = (storage.warnings[groupJid][sender] || 0) + 1;
             storage.warnings[groupJid][sender] = currentWarns;
-            saveStorage(storage);
+            writeStorage(storage);
 
             const remaining = settings.max - currentWarns;
             const mention = sender.includes('@') ? sender : `${sender}@s.whatsapp.net`;
@@ -207,7 +199,7 @@ export default {
                     await ctx.reply('❌ Failed to kick user. Make sure I am an admin.');
                 }
                 storage.warnings[groupJid][sender] = 0;
-                saveStorage(storage);
+                writeStorage(storage);
             } else {
                 await ctx.reply(`⚠️ @${sender.split('@')[0]}, violation detected (${type}).\nWarnings: ${currentWarns}/${settings.max}\nYou have ${remaining} more grace.`, { mentions: [mention] });
             }

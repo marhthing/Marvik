@@ -1,21 +1,4 @@
-// Dynamic per-user command permission management plugin
-import fs from 'fs';
-import path from 'path';
-
-const STORAGE_FILE = path.resolve('storage', 'storage.json');
-
-function loadStorage() {
-  try {
-    if (fs.existsSync(STORAGE_FILE)) {
-      return JSON.parse(fs.readFileSync(STORAGE_FILE, 'utf-8'));
-    }
-  } catch {}
-  return {};
-}
-
-function saveStorage(data) {
-  fs.writeFileSync(STORAGE_FILE, JSON.stringify(data, null, 2), 'utf-8');
-}
+import { readStorage, writeStorage } from '../utils/storageStore.js';
 
 export default {
   name: 'permissions',
@@ -27,8 +10,11 @@ export default {
       name: 'allow',
       description: 'Allow a user to use a command: .allow <cmd>',
       usage: '.allow <cmd>',
+      category: 'owner',
+      cooldown: 3,
       groupOnly: false,
       ownerOnly: true,
+      adminOnly: false,
       async execute(ctx) {
         // In both private and group chats, just use chatId as the JID to allow
         const [cmd] = ctx.args;
@@ -36,12 +22,12 @@ export default {
         if (!cmd || !jid) {
           return ctx.reply('Usage: .allow <cmd>');
         }
-        const storage = loadStorage();
+        const storage = readStorage();
         storage.allowedCommands = storage.allowedCommands || {};
         storage.allowedCommands[cmd] = storage.allowedCommands[cmd] || [];
         if (!storage.allowedCommands[cmd].includes(jid)) {
           storage.allowedCommands[cmd].push(jid);
-          saveStorage(storage);
+          writeStorage(storage);
           ctx.reply(`✅ Allowed ${cmd} command`);
         } else {
           ctx.reply(`${cmd} command is already allowed`);
@@ -49,24 +35,28 @@ export default {
       }
     },
     {
-      name: 'remove',
-      description: 'Remove a user or group from allowed list: .remove <cmd>',
-      usage: '.remove <cmd>',
+      name: 'deny',
+      aliases: ['disallow'],
+      description: 'Remove a user or group from allowed list: .deny <cmd>',
+      usage: '.deny <cmd>',
+      category: 'owner',
+      cooldown: 3,
       groupOnly: false,
       ownerOnly: true,
+      adminOnly: false,
       async execute(ctx) {
         // In both private and group chats, just use chatId as the JID to remove
         const [cmd] = ctx.args;
         const jid = ctx.chatId;
         if (!cmd || !jid) {
-          return ctx.reply('Usage: .remove <cmd>');
+          return ctx.reply('Usage: .deny <cmd>');
         }
-        const storage = loadStorage();
+        const storage = readStorage();
         storage.allowedCommands = storage.allowedCommands || {};
         storage.allowedCommands[cmd] = storage.allowedCommands[cmd] || [];
         if (storage.allowedCommands[cmd].includes(jid)) {
           storage.allowedCommands[cmd] = storage.allowedCommands[cmd].filter(j => j !== jid);
-          saveStorage(storage);
+          writeStorage(storage);
           ctx.reply(`❌ Removed ${cmd} command`);
         } else {
           ctx.reply(`${cmd} command was not allowed`);
@@ -77,10 +67,13 @@ export default {
       name: 'pm',
       description: 'Show allowed users for all commands',
       usage: '.pm',
+      category: 'owner',
+      cooldown: 3,
       groupOnly: false,
       ownerOnly: true,
+      adminOnly: false,
       async execute(ctx) {
-        const storage = loadStorage();
+        const storage = readStorage();
         const allowed = storage.allowedCommands || {};
         // Show only allowed commands for the current user or group
         const myJid = ctx.chatId;

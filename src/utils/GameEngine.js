@@ -1,4 +1,4 @@
-import pendingActions from './pendingActions.js';
+import { createReplySession } from './gameSessions.js';
 
 export default class GameEngine {
     constructor(ctx, options = {}) {
@@ -18,9 +18,7 @@ export default class GameEngine {
     }
 
     async startJoinPhase() {
-        const botJid = this.ctx.platformAdapter?.client?.user?.id || 
-                       this.ctx.bot?.client?.user?.id || 
-                       this.ctx.client?.user?.id || "";
+        const botJid = this.ctx.platformAdapter?.client?.user?.id || "";
         const hostJid = this.ctx.isFromMe ? botJid : this.ctx.senderId;
         const hostName = this.ctx.senderName || this.ctx.pushName || this.normalizeId(hostJid);
 
@@ -57,7 +55,7 @@ export default class GameEngine {
             );
         }, 15000);
 
-        pendingActions.set(this.chatId, sent.key.id, {
+        createReplySession(this.chatId, sent, {
             type: `${this.gameType}_join`,
             data: { gameId: this.chatId },
             timeout: this.joinTimeout + 5000,
@@ -105,6 +103,7 @@ export default class GameEngine {
             if (this.participants.size < this.minPlayers) {
                 this.phase = 'ended';
                 await this.ctx.reply(`❌ Not enough players joined. Game cancelled.`);
+                await this.onEnd({ reason: 'not_enough_players', gameType: this.gameType, chatId: this.chatId });
                 return;
             }
 

@@ -14,6 +14,10 @@ export default {
       description: 'Find lyrics for a song',
       usage: '.lyrics <song name>',
       category: 'utils',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         if (!ctx.args[0]) return ctx.reply('Please provide a song name.');
         try {

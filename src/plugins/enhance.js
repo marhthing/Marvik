@@ -1,4 +1,6 @@
 import { shouldReact } from '../utils/pendingActions.js';
+import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
+import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
 export default {
   name: 'enhance',
@@ -11,50 +13,23 @@ export default {
       description: 'Enhance image quality (reply to image)',
       usage: '.enhance (reply to image)',
       category: 'media',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 5,
       async execute(ctx) {
-        function extractMedia(ctx) {
-          const extMsg = ctx.raw?.message?.extendedTextMessage;
-          const quotedMsg = extMsg?.contextInfo?.quotedMessage;
-          if (quotedMsg && quotedMsg.imageMessage) {
-            return {
-              type: 'image',
-              msg: {
-                key: {
-                  remoteJid: ctx.chatId,
-                  id: extMsg.contextInfo.stanzaId,
-                  participant: extMsg.contextInfo.participant,
-                  fromMe: false
-                },
-                message: { imageMessage: quotedMsg.imageMessage }
-              }
-            };
-          }
-          if (quotedMsg && quotedMsg.videoMessage) {
-            return {
-              type: 'video',
-              msg: {
-                key: {
-                  remoteJid: ctx.chatId,
-                  id: extMsg.contextInfo.stanzaId,
-                  participant: extMsg.contextInfo.participant,
-                  fromMe: false
-                },
-                message: { videoMessage: quotedMsg.videoMessage }
-              }
-            };
-          }
-          return null;
-        }
-        const media = extractMedia(ctx);
+        const media = getQuotedMediaTarget(ctx, ['image', 'video']);
         if (!media) {
           return await ctx.reply('❌ Please reply to an image or video to enhance.');
         }
         let buffer;
         try {
-          buffer = await ctx._adapter.downloadMedia({ raw: media.msg });
-          if (!buffer || buffer.length === 0) throw new Error('Empty buffer');
+          buffer = await downloadMediaBuffer(ctx, media);
         } catch (e) {
           return await ctx.reply('❌ Failed to download media.');
+        }
+        if (media.type === 'image' && !hasValidMediaHeader(buffer)) {
+          return await ctx.reply('❌ The downloaded image appears corrupted or unsupported.');
         }
         if (media.type === 'image') {
           let sharp;

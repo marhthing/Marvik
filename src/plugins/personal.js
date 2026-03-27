@@ -2,6 +2,8 @@
  * Personal management plugin
  */
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
+import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
+import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
 export default {
   name: 'personal',
@@ -15,19 +17,20 @@ export default {
       usage: 'Reply to an image with .setpp',
       category: 'personal',
       ownerOnly: true,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
-        const quotedImage = ctx.quoted?.message?.imageMessage || 
-                          ctx.raw?.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
+        const media = getQuotedMediaTarget(ctx, ['image']);
         
-        if (!quotedImage) {
+        if (!media) {
           return ctx.reply('Please reply to an image with .setpp');
         }
         try {
-          const buffer = await ctx.platformAdapter.downloadMedia({
-            raw: {
-              message: { imageMessage: quotedImage }
-            }
-          });
+          const buffer = await downloadMediaBuffer(ctx, media);
+          if (!hasValidMediaHeader(buffer)) {
+            return ctx.reply('❌ The downloaded image appears corrupted or unsupported.');
+          }
           const botId = jidNormalizedUser(ctx.platformAdapter.client.user.id);
           await ctx.platformAdapter.client.updateProfilePicture(botId, buffer);
           await ctx.reply('✅ Profile picture updated successfully.');
@@ -36,12 +39,16 @@ export default {
         }
       }
     },
+,
     {
       name: 'setbio',
       description: 'Update owner bio',
       usage: '.setbio <text>',
       category: 'personal',
       ownerOnly: true,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       async execute(ctx) {
         if (!ctx.args[0]) return ctx.reply('Please provide a new bio.');
         try {
@@ -57,6 +64,11 @@ export default {
       aliases: ['clearchat'],
       description: 'Clear chat conversation (local)',
       usage: '.clear',
+      category: 'general',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 3,
       execute: async (ctx) => {
         try {
           // Allow .clear in any chat (group, owner, or private)
