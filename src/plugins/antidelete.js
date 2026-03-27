@@ -4,6 +4,8 @@ import { getBooleanEnv, setEnvValue } from '../utils/envStore.js';
 import { getStorageSection, patchStorageSection } from '../utils/storageStore.js';
 import {
   applyDestinationCommand,
+  normalizeDestinationConfig,
+  normalizeDestinationJid,
   normalizeDirectJid,
   normalizeJidList,
   resolveDestinationJid
@@ -35,11 +37,10 @@ function getAntideleteEnabled() {
 
 function getStatusAntideleteConfig() {
   const config = getStorageSection('statusantidelete', STATUS_ANTIDELETE_DEFAULT);
-  const dest = config.dest === 'custom' ? 'custom' : 'owner';
-  const jid = dest === 'custom' ? normalizeStatusDestinationJid(config.jid) : null;
+  const normalized = normalizeDestinationConfig(config, STATUS_ANTIDELETE_DEFAULT, { allowGroup: true });
   return {
-    dest,
-    jid,
+    dest: normalized.dest,
+    jid: normalized.jid,
     scope: ['all', 'only', 'except'].includes(config.scope) ? config.scope : 'all',
     only: normalizeJidList(config.only),
     except: normalizeJidList(config.except)
@@ -54,7 +55,7 @@ function setStatusAntideleteConfig(newConfig) {
   };
 
   next.dest = next.dest === 'custom' ? 'custom' : 'owner';
-  next.jid = next.dest === 'custom' ? normalizeStatusDestinationJid(next.jid) : null;
+  next.jid = next.dest === 'custom' ? normalizeDestinationJid(next.jid, { allowGroup: true }) : null;
   next.scope = ['all', 'only', 'except'].includes(next.scope) ? next.scope : 'all';
   next.only = normalizeJidList(next.only);
   next.except = normalizeJidList(next.except);
@@ -75,17 +76,6 @@ function setStatusAntideleteEnabled(enabled) {
 
 function parseStatusSenderList(input) {
   return normalizeJidList(String(input || '').split(','));
-}
-
-function normalizeStatusDestinationJid(value) {
-  if (!value) return null;
-  const trimmed = String(value).trim().toLowerCase();
-  if (!trimmed) return null;
-  if (trimmed.endsWith('@status') || trimmed.endsWith('@broadcast')) return null;
-  if (trimmed.endsWith('@g.us')) return trimmed;
-  if (trimmed.includes('@')) return trimmed;
-  const digits = trimmed.replace(/\D/g, '');
-  return digits ? `${digits}@s.whatsapp.net` : null;
 }
 
 function shouldTrackStatusSender(senderJid, config) {
@@ -282,7 +272,7 @@ export default {
           action !== 'except' &&
           action !== 'to'
         ) {
-          const jid = normalizeStatusDestinationJid(action);
+          const jid = normalizeDestinationJid(action, { allowGroup: true });
           if (jid) {
             setStatusAntideleteConfig({ dest: 'custom', jid });
             await ctx.reply(`Status delete recovery destination set to ${jid}.`);
@@ -333,7 +323,7 @@ export default {
             return;
           }
 
-          const jid = normalizeStatusDestinationJid(targetInput);
+          const jid = normalizeDestinationJid(targetInput, { allowGroup: true });
           if (!jid) {
             await ctx.reply('Invalid JID. Use a user JID/phone or a group JID (ends with @g.us).');
             return;
@@ -500,7 +490,7 @@ export default {
       const msg = memoryStore.getMessage('whatsapp', chatId, deletedMessageId);
       if (!msg?.message) return;
 
-      const destJid = resolveAntideleteDestination(ownerJid, conf, ownerJid);
+      const destJid = resolveDestinationJid({ chatId: ownerJid }, conf, ownerJid, { allowGroup: true });
       let senderNumber = (senderJid || 'unknown').split('@')[0] || 'Unknown';
       if (senderNumber.includes(':')) senderNumber = senderNumber.split(':')[0];
 
