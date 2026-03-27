@@ -4,6 +4,7 @@
 import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
 import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
+import pendingActions from '../utils/pendingActions.js';
 
 export default {
   name: 'personal',
@@ -73,19 +74,43 @@ export default {
         try {
           // Allow .clear in any chat (group, owner, or private)
           if (ctx.platform !== 'whatsapp') {
-            return await ctx.reply('❌ This command is only available on WhatsApp.');
+            return await ctx.reply('? This command is only available on WhatsApp.');
           }
-          // Delete the command message first
-          try {
-            await ctx._adapter.deleteMessage(ctx.chatId, ctx.messageId);
-          } catch (e) {
-            // Ignore if deletion fails
-          }
-          await ctx._adapter.clearChat(ctx.chatId);
+          const prompt = await ctx.reply('Are you sure?\n1: yes\n2: no');
+          pendingActions.set(ctx.chatId, prompt.key.id, {
+            type: 'clear_confirm',
+            userId: ctx.senderId,
+            data: {
+              commandMessageId: ctx.messageId
+            },
+            match: (text) => {
+              const normalized = String(text || '').trim().toLowerCase();
+              return normalized === '1' || normalized === '2' || normalized === 'yes' || normalized === 'no';
+            },
+            handler: async (replyCtx, pending) => {
+              const normalized = String(replyCtx.text || '').trim().toLowerCase();
+              if (normalized === '2' || normalized === 'no') {
+                await replyCtx.reply('Cancelled.');
+                return true;
+              }
+              // Delete the command message first
+              try {
+                if (pending?.data?.commandMessageId) {
+                  await replyCtx._adapter.deleteMessage(replyCtx.chatId, pending.data.commandMessageId);
+                }
+              } catch (e) {
+                // Ignore if deletion fails
+              }
+              await replyCtx._adapter.clearChat(replyCtx.chatId);
+              return true;
+            },
+            timeout: 2 * 60 * 1000
+          });
         } catch (error) {
           console.error(`Error in .clear command: ${error.message}`);
-          await ctx.reply('❌ Failed to clear chat.');
+          await ctx.reply('? Failed to clear chat.');
         }
+
       }
     }
   ]
