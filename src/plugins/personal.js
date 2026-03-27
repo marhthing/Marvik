@@ -40,7 +40,6 @@ export default {
         }
       }
     },
-,
     {
       name: 'setbio',
       description: 'Update owner bio',
