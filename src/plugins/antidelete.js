@@ -4,7 +4,6 @@ import { getBooleanEnv, setEnvValue } from '../utils/envStore.js';
 import { getStorageSection, patchStorageSection } from '../utils/storageStore.js';
 import {
   applyDestinationCommand,
-  normalizeDestinationConfig,
   normalizeDirectJid,
   normalizeJidList,
   resolveDestinationJid
@@ -35,10 +34,12 @@ function getAntideleteEnabled() {
 }
 
 function getStatusAntideleteConfig() {
-  const config = normalizeDestinationConfig(getStorageSection('statusantidelete', STATUS_ANTIDELETE_DEFAULT));
+  const config = getStorageSection('statusantidelete', STATUS_ANTIDELETE_DEFAULT);
+  const dest = config.dest === 'custom' ? 'custom' : 'owner';
+  const jid = dest === 'custom' ? normalizeStatusDestinationJid(config.jid) : null;
   return {
-    dest: config.dest === 'custom' ? 'custom' : 'owner',
-    jid: config.dest === 'custom' ? config.jid : null,
+    dest,
+    jid,
     scope: ['all', 'only', 'except'].includes(config.scope) ? config.scope : 'all',
     only: normalizeJidList(config.only),
     except: normalizeJidList(config.except)
@@ -53,7 +54,7 @@ function setStatusAntideleteConfig(newConfig) {
   };
 
   next.dest = next.dest === 'custom' ? 'custom' : 'owner';
-  next.jid = next.dest === 'custom' ? normalizeDirectJid(next.jid) : null;
+  next.jid = next.dest === 'custom' ? normalizeStatusDestinationJid(next.jid) : null;
   next.scope = ['all', 'only', 'except'].includes(next.scope) ? next.scope : 'all';
   next.only = normalizeJidList(next.only);
   next.except = normalizeJidList(next.except);
@@ -74,6 +75,17 @@ function setStatusAntideleteEnabled(enabled) {
 
 function parseStatusSenderList(input) {
   return normalizeJidList(String(input || '').split(','));
+}
+
+function normalizeStatusDestinationJid(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim().toLowerCase();
+  if (!trimmed) return null;
+  if (trimmed.endsWith('@status') || trimmed.endsWith('@broadcast')) return null;
+  if (trimmed.endsWith('@g.us')) return trimmed;
+  if (trimmed.includes('@')) return trimmed;
+  const digits = trimmed.replace(/\D/g, '');
+  return digits ? `${digits}@s.whatsapp.net` : null;
 }
 
 function shouldTrackStatusSender(senderJid, config) {
@@ -111,7 +123,7 @@ function formatStatusAntideleteSummary() {
     '.antistatusdelete only <jid>,<jid>',
     '.antistatusdelete except <jid>,<jid>',
     '.antistatusdelete to owner',
-    '.antistatusdelete to <jid>'
+    '.antistatusdelete to <jid|groupJid>'
   ].join('\n');
 }
 
@@ -262,6 +274,22 @@ export default {
           return;
         }
 
+        if (
+          action !== 'on' &&
+          action !== 'off' &&
+          action !== 'all' &&
+          action !== 'only' &&
+          action !== 'except' &&
+          action !== 'to'
+        ) {
+          const jid = normalizeStatusDestinationJid(action);
+          if (jid) {
+            setStatusAntideleteConfig({ dest: 'custom', jid });
+            await ctx.reply(`Status delete recovery destination set to ${jid}.`);
+            return;
+          }
+        }
+
         if (action === 'on' || action === 'off') {
           setStatusAntideleteEnabled(action === 'on');
           await ctx.reply(`Status delete recovery ${action === 'on' ? 'enabled' : 'disabled'}.`);
@@ -305,9 +333,9 @@ export default {
             return;
           }
 
-          const jid = normalizeDirectJid(targetInput);
+          const jid = normalizeStatusDestinationJid(targetInput);
           if (!jid) {
-            await ctx.reply('Invalid JID. Use a direct user JID or phone number.');
+            await ctx.reply('Invalid JID. Use a user JID/phone or a group JID (ends with @g.us).');
             return;
           }
 
