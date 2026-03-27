@@ -41,6 +41,25 @@ function normalizeId(id) {
   return id.split('@')[0].split(':')[0].replace(/\D/g, '');
 }
 
+function isStopCommand(text) {
+  const normalized = String(text || '').trim().toUpperCase();
+  return normalized === 'STOP' || normalized === 'EXIT' || normalized === 'QUIT';
+}
+
+function isOwnerStop(ctx, text) {
+  return Boolean(ctx?.isOwner) && isStopCommand(text);
+}
+
+function canStopGame(ctx, game, senderId, text) {
+  if (!isStopCommand(text)) return false;
+  if (isOwnerStop(ctx, text)) return true;
+  const currentTurn = game?.currentTurn || game?.engine?.currentTurn;
+  if (currentTurn && senderId) {
+    return normalizeId(senderId) == normalizeId(currentTurn);
+  }
+  return Boolean(game?.engine?.participants && game.engine.participants.size <= 1);
+}
+
 function formatLeaderboard(game) {
   const scores = game.engine.scores;
   if (!scores || scores.size === 0) return 'No scores yet!';
@@ -119,7 +138,7 @@ async function sendTriviaQuestion(ctx, game) {
     type: 'trivia_answer',
     data: { gameId: ctx.chatId },
     timeout: 35000,
-    match: (text) => ['A', 'B', 'C', 'D', 'STOP'].includes(text.toUpperCase().trim()),
+    match: (text) => ['A', 'B', 'C', 'D', 'STOP', 'EXIT', 'QUIT'].includes(text.toUpperCase().trim()),
     handler: async (replyCtx) => {
       const g = activeGames.get(ctx.chatId);
       if (!g || g.engine.phase !== 'playing') return true;
@@ -129,10 +148,14 @@ async function sendTriviaQuestion(ctx, game) {
       const senderId = fromMe ? botJid : replyCtx.senderId;
       const text = replyCtx.text.toUpperCase().trim();
       
-      if (text === 'STOP') {
-        if (g.answerTimer) clearTimeout(g.answerTimer);
-        await endTriviaGame(replyCtx, g, 'Game stopped by player');
-        return true;
+      if (isStopCommand(text)) {
+        if (canStopGame(replyCtx, g, senderId, text)) {
+          if (g.answerTimer) clearTimeout(g.answerTimer);
+          await endTriviaGame(replyCtx, g, 'Game stopped by player');
+          return true;
+        }
+        await replyCtx.reply(`Not your turn! It's @${normalizeId(g.currentTurn)}'s turn.`, { mentions: [g.currentTurn] });
+        return false;
       }
       
       if (normalizeId(senderId) !== normalizeId(g.currentTurn)) {
@@ -206,17 +229,20 @@ async function startTicTacToeGame(ctx, game) {
     type: 'ttt_move',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
-    match: (text) => ['STOP', 'A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3'].includes(text.toUpperCase().trim()),
+    match: (text) => ['STOP', 'EXIT', 'QUIT', 'A1', 'A2', 'A3', 'B1', 'B2', 'B3', 'C1', 'C2', 'C3'].includes(text.toUpperCase().trim()),
     handler: async (replyCtx) => {
       const g = activeGames.get(ctx.chatId);
       if (!g || g.engine.phase !== 'playing') return true;
       const senderId = replyCtx.senderId;
       const text = replyCtx.text.toUpperCase().trim();
-      
-      if (text === 'STOP') {
-        activeGames.delete(ctx.chatId);
-        await replyCtx.reply(`🏁 Game quit!`);
-        return true;
+      if (isStopCommand(text)) {
+        if (canStopGame(replyCtx, g, senderId, text)) {
+          activeGames.delete(ctx.chatId);
+          await replyCtx.reply('Game quit!');
+          return true;
+        }
+        await replyCtx.reply('Not your turn!');
+        return false;
       }
       
       if (normalizeId(senderId) !== normalizeId(g.currentTurn)) {
@@ -270,14 +296,14 @@ async function startHangmanGame(ctx, game) {
     type: 'hangman_guess',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
-    match: (text) => text.length === 1 || text.toUpperCase() === 'STOP',
+    match: (text) => text.length === 1 || isStopCommand(text),
     handler: async (replyCtx) => {
       const g = activeGames.get(ctx.chatId);
       if (!g || g.engine.phase !== 'playing') return true;
-      if (normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
+      if (!isOwnerStop(replyCtx, replyCtx.text) && normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
       
       const letter = replyCtx.text.toUpperCase().trim();
-      if (letter === 'STOP') { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; }
+      if (isStopCommand(letter)) { if (canStopGame(replyCtx, g, replyCtx.senderId, letter)) { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; } return false; }
       if (g.guessedLetters.has(letter)) { await replyCtx.reply('Already guessed!'); return false; }
       
       g.guessedLetters.add(letter);
@@ -326,14 +352,14 @@ async function startWordleGame(ctx, game) {
     type: 'wordle_guess',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
-    match: (text) => text.length === 5 || text.toUpperCase() === 'STOP',
+    match: (text) => text.length === 5 || isStopCommand(text),
     handler: async (replyCtx) => {
       const g = activeGames.get(ctx.chatId);
       if (!g || g.engine.phase !== 'playing') return true;
-      if (normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
+      if (!isOwnerStop(replyCtx, replyCtx.text) && normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
 
       const guess = replyCtx.text.toUpperCase().trim();
-      if (guess === 'STOP') { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; }
+      if (isStopCommand(guess)) { if (canStopGame(replyCtx, g, replyCtx.senderId, guess)) { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; } return false; }
       if (guess.length !== 5) { await replyCtx.reply('Must be 5 letters!'); return false; }
 
       g.attempts++;
@@ -391,10 +417,10 @@ async function startRiddleGame(ctx, game) {
     handler: async (replyCtx) => {
       const g = activeGames.get(ctx.chatId);
       if (!g || g.engine.phase !== 'playing') return true;
-      if (normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
+      if (!isOwnerStop(replyCtx, replyCtx.text) && normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
 
       const guess = replyCtx.text.toLowerCase().trim();
-      if (guess === 'stop') { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; }
+      if (isStopCommand(guess)) { if (canStopGame(replyCtx, g, replyCtx.senderId, guess)) { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; } return false; }
       if (guess === 'hint') { await replyCtx.reply(`💡 Hint: ${g.currentRiddle.hint}`); return false; }
 
       if (guess === g.currentRiddle.answer.toLowerCase()) {
@@ -447,14 +473,14 @@ async function startTruthDareGame(ctx, game, type) {
     type: 'td_done',
     data: { gameId: ctx.chatId, type },
     timeout: 5 * 60 * 1000,
-    match: (text) => ['DONE', 'STOP'].includes(text.toUpperCase().trim()),
+    match: (text) => ['DONE', 'STOP', 'EXIT', 'QUIT'].includes(text.toUpperCase().trim()),
     handler: async (replyCtx) => {
       const g = activeGames.get(ctx.chatId);
       if (!g || g.engine.phase !== 'playing') return true;
-      if (normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
+      if (!isOwnerStop(replyCtx, replyCtx.text) && normalizeId(replyCtx.senderId) !== normalizeId(g.currentTurn)) return false;
       
       const text = replyCtx.text.toUpperCase().trim();
-      if (text === 'STOP') { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; }
+      if (isStopCommand(text)) { if (canStopGame(replyCtx, g, replyCtx.senderId, text)) { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; } return false; }
       
       const participants = [...g.engine.participants.keys()];
       g.currentTurn = participants[(participants.indexOf(g.currentTurn) + 1) % participants.length];
@@ -496,12 +522,12 @@ async function startAkinatorGame(ctx, game) {
     type: 'akinator_answer',
     data: { gameId: ctx.chatId },
     timeout: 5 * 60 * 1000,
-    match: (text) => ['YES', 'Y', 'NO', 'N', 'MAYBE', 'IDK', 'STOP'].includes(text.toUpperCase().trim()),
+    match: (text) => ['YES', 'Y', 'NO', 'N', 'MAYBE', 'IDK', 'STOP', 'EXIT', 'QUIT'].includes(text.toUpperCase().trim()),
     handler: async (replyCtx) => {
       const g = activeGames.get(ctx.chatId);
       if (!g) return true;
       const text = replyCtx.text.toUpperCase().trim();
-      if (text === 'STOP') { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; }
+      if (isStopCommand(text)) { if (canStopGame(replyCtx, g, replyCtx.senderId, text)) { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; } return false; }
 
       g.answers.push(text.toLowerCase());
       g.questionHistory[g.step].answer = text.toLowerCase();
@@ -515,10 +541,13 @@ async function startAkinatorGame(ctx, game) {
             type: 'akinator_guess',
             data: { gameId: ctx.chatId, guess },
             timeout: 60000,
-            match: (t) => ['YES', 'Y', 'NO', 'N', 'STOP'].includes(t.toUpperCase().trim()),
+            match: (t) => ['YES', 'Y', 'NO', 'N', 'STOP', 'EXIT', 'QUIT'].includes(t.toUpperCase().trim()),
             handler: async (guessCtx) => {
                 const finalChoice = guessCtx.text.toUpperCase().trim();
-                if (finalChoice === 'STOP') { activeGames.delete(ctx.chatId); return true; }
+                if (isStopCommand(finalChoice)) {
+                    if (canStopGame(guessCtx, g, guessCtx.senderId, finalChoice)) { activeGames.delete(ctx.chatId); return true; }
+                    return false;
+                }
                 if (finalChoice === 'YES' || finalChoice === 'Y') {
                     activeGames.delete(ctx.chatId);
                     await guessCtx.reply(`🎉 I knew it! I am the best! 🧞`);
