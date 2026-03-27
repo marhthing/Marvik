@@ -1,7 +1,6 @@
-import path from 'path';
-import envMemory from '../utils/envMemory.js';
 import pendingActions from '../utils/pendingActions.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
+import { normalizeWhatsAppJid } from '../utils/whatsappJid.js';
 
 /**
  * send.js - WhatsApp plugin
@@ -20,7 +19,7 @@ export default {
       console.error('[send.js] No WhatsApp adapter, aborting');
       return;
     }
-    const ownerJid = bot.config.ownerNumber ? `${bot.config.ownerNumber}@s.whatsapp.net` : null;
+    const ownerJid = normalizeWhatsAppJid(bot.config.ownerNumber || process.env.OWNER_NUMBER || '');
     if (!ownerJid) {
       console.error('[send.js] No ownerJid, aborting');
       return;
@@ -38,11 +37,11 @@ export default {
             if (!remoteJid) continue;
             const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.imageMessage?.contextInfo || msg.message?.videoMessage?.contextInfo || {};
             const quoted = contextInfo.quotedMessage;
-            const quotedParticipant = contextInfo.participant;
-            const quotedRemoteJid = contextInfo.remoteJid || contextInfo.remoteJID;
+            const quotedParticipant = normalizeWhatsAppJid(contextInfo.participant || '');
+            const quotedRemoteJid = contextInfo.remoteJid || contextInfo.remoteJID || 'status@broadcast';
             if (!quoted) continue;
-            if (!quotedRemoteJid || !(quotedRemoteJid === 'status@broadcast' || quotedRemoteJid.endsWith('@status') || quotedRemoteJid.endsWith('@broadcast'))) continue;
-            if (quotedParticipant !== ownerJid) continue;
+            if (!(quotedRemoteJid === 'status@broadcast' || quotedRemoteJid.endsWith('@status') || quotedRemoteJid.endsWith('@broadcast'))) continue;
+            if (!quotedParticipant || quotedParticipant !== ownerJid) continue;
             const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
             if (text.trim().toLowerCase() !== 'send') continue;
             const userJid = msg.key.participant || msg.key.remoteJid;
