@@ -181,31 +181,68 @@ function formatViews(count) {
   return `${count} views`;
 }
 
-function getFormatStringForHeight(height) {
-  return `best[height<=${height}][vcodec!=none][acodec!=none]/bestvideo*[height<=${height}]+bestaudio/best[height<=${height}]/best`;
-}
-
 async function getVideoFormats(url) {
   const info = await youtubedl(url, getDownloadOptions({ dumpSingleJson: true }));
-  const formats = [];
-  const seenHeights = new Set();
+  const groupedFormats = new Map();
 
   for (const format of info.formats || []) {
     const height = format.height || 0;
     const hasVideo = format.vcodec && format.vcodec !== 'none';
-    if (!hasVideo || !height || height > 1080) continue;
+    const formatId = format.format_id;
+    if (!hasVideo || !height || !formatId || height > 1080) continue;
 
     const normalizedHeight = [2160, 1440, 1080, 720, 480, 360, 240, 144]
       .find(item => height >= item) || height;
 
-    if (seenHeights.has(normalizedHeight)) continue;
-    seenHeights.add(normalizedHeight);
+    const entry = groupedFormats.get(normalizedHeight) || [];
+    entry.push(format);
+    groupedFormats.set(normalizedHeight, entry);
+  }
+
+  const formats = [];
+
+  for (const [normalizedHeight, candidates] of groupedFormats.entries()) {
+    const sortedCandidates = [...candidates].sort((a, b) => {
+      const aHasAudio = a.acodec && a.acodec !== 'none' ? 1 : 0;
+      const bHasAudio = b.acodec && b.acodec !== 'none' ? 1 : 0;
+      const aIsMp4 = a.ext === 'mp4' ? 1 : 0;
+      const bIsMp4 = b.ext === 'mp4' ? 1 : 0;
+      const aFps = a.fps || 0;
+      const bFps = b.fps || 0;
+      const aTbr = a.tbr || 0;
+      const bTbr = b.tbr || 0;
+
+      return (
+        bHasAudio - aHasAudio ||
+        bIsMp4 - aIsMp4 ||
+        bFps - aFps ||
+        bTbr - aTbr
+      );
+    });
+
+    const bestCandidate = sortedCandidates[0];
+    const directSelectors = [];
+
+    for (const candidate of sortedCandidates) {
+      const hasAudio = candidate.acodec && candidate.acodec !== 'none';
+      directSelectors.push(
+        hasAudio
+          ? candidate.format_id
+          : `${candidate.format_id}+bestaudio/best`
+      );
+    }
+
+    const selectorChain = Array.from(new Set([
+      ...directSelectors,
+      `bestvideo*[height<=${normalizedHeight}]+bestaudio/best[height<=${normalizedHeight}][vcodec!=none][acodec!=none]/best[height<=${normalizedHeight}]/best`
+    ]));
 
     formats.push({
       quality: `${normalizedHeight}p`,
       height: normalizedHeight,
-      size: format.filesize || format.filesize_approx || 0,
-      formatString: getFormatStringForHeight(normalizedHeight)
+      size: bestCandidate.filesize || bestCandidate.filesize_approx || 0,
+      formatSelectors: selectorChain,
+      formatString: selectorChain[0]
     });
   }
 
@@ -252,6 +289,22 @@ async function downloadVideoWithFormat(url, formatString, tempDir) {
     }
     throw error;
   }
+}
+
+async function downloadVideoWithSelectors(url, selectors, tempDir) {
+  const attempts = Array.isArray(selectors) ? selectors : [selectors];
+  let lastError = null;
+
+  for (const formatString of attempts.filter(Boolean)) {
+    try {
+      const result = await downloadVideoWithFormat(url, formatString, tempDir);
+      return { ...result, formatString };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('Download failed');
 }
 
 async function downloadVideoWithFallback(url, tempDir) {
@@ -319,7 +372,7 @@ async function downloadAudioWithYtDlp(url, tempDir) {
 
 async function deliverYouTubeVideo(ctx, url, tempDir, title, formatString = null) {
   const result = formatString
-    ? await downloadVideoWithFormat(url, formatString, tempDir)
+    ? await downloadVideoWithSelectors(url, formatString, tempDir)
     : await downloadVideoWithFallback(url, tempDir);
   try {
     await sendVideoFile(ctx, result.path, {
@@ -390,7 +443,7 @@ export default {
 
             const choices = formats.map((format, index) => ({
               label: `${index + 1} - ${format.quality}${format.size ? ` (${formatFileSize(format.size)})` : ''}`,
-              formatString: format.formatString
+              formatString: format.formatSelectors
             }));
 
             if (choices.length === 1) {
