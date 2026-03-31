@@ -114,7 +114,7 @@ export default {
             }
             execSync(`git clone --depth 1 ${repoUrl} ${tempDir}`);
             // Delete everything except keep list
-            const keep = ['.env', 'session', 'index.js', 'storage', 'node_modules', 'package-lock.json'];
+            const keep = ['.env', 'session', 'index.js', 'storage', 'cookies', 'node_modules', 'package-lock.json'];
             const all = fs.readdirSync(cwd);
             for (const item of all) {
               if (keep.includes(item) || item === 'temp_update') continue;
@@ -199,7 +199,7 @@ export default {
           }
         }
         execSync(`git clone --depth 1 ${repoUrl} ${tempDir}`);
-        const keep = ['.env', 'session', 'index.js', 'storage', 'node_modules', 'package-lock.json'];
+        const keep = ['.env', 'session', 'index.js', 'storage', 'cookies', 'node_modules', 'package-lock.json'];
         const all = fs.readdirSync(cwd);
         for (const item of all) {
           if (keep.includes(item) || item === 'temp_update') continue;

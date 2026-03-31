@@ -182,7 +182,34 @@ function formatViews(count) {
 }
 
 async function getVideoFormats(url) {
-  const info = await youtubedl(url, getDownloadOptions({ dumpSingleJson: true }));
+  let info = null;
+  let lastError = null;
+  const metadataAttempts = [
+    { dumpSingleJson: true },
+    { dumpSingleJson: true, preferFreeFormats: false },
+    { dumpSingleJson: true, youtubeSkipDashManifest: true, youtubeSkipHlsManifest: true },
+    { dumpSingleJson: true, format: 'b/bv+ba' }
+  ];
+
+  for (const attempt of metadataAttempts) {
+    try {
+      info = await youtubedl(url, getDownloadOptions(attempt));
+      break;
+    } catch (error) {
+      lastError = error;
+      console.error('[youtube] getVideoFormats metadata attempt failed', {
+        url,
+        attempt,
+        message: error?.message || String(error),
+        stderr: error?.stderr || null
+      });
+    }
+  }
+
+  if (!info) {
+    throw lastError || new Error('Failed to fetch YouTube metadata');
+  }
+
   const groupedFormats = new Map();
 
   for (const format of info.formats || []) {
