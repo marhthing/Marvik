@@ -21,12 +21,12 @@ const SUPPORTED_SERVICES = [
   {
     service: 'tiktok',
     command: 'tiktok',
-    pattern: /(?:https?:\/\/)?(?:vm\.|vt\.|www\.)?tiktok\.com\/(?:@[\w.-]+\/video\/\d+|t\/[\w-]+|v\/\d+|[\w-]+)/i
+    pattern: /(?:https?:\/\/)?(?:(?:www|vm|vt)\.)?tiktok\.com\/(?:@[\w.-]+\/video\/\d+|t\/[\w-]+|v\/\d+|[\w-]+)(?:[/?][^\s]*)?/i
   },
   {
     service: 'twitter',
     command: 'twitter',
-    pattern: /(?:https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/\w+\/status\/\d+/i
+    pattern: /(?:https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/(?:i\/web\/)?status\/\d+(?:[/?][^\s]*)?|(?:https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/\w+\/status\/\d+(?:[/?][^\s]*)?/i
   },
   {
     service: 'facebook',
@@ -36,7 +36,7 @@ const SUPPORTED_SERVICES = [
   {
     service: 'youtube',
     command: 'ytv',
-    pattern: /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)[^\s]+|youtu\.be\/[A-Za-z0-9_-]{11})/i
+    pattern: /(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)[^\s]+|youtu\.be\/[A-Za-z0-9_-]{11}(?:[/?][^\s]*)?)/i
   },
   {
     service: 'snapchat',
@@ -85,13 +85,14 @@ function isConfigEnabledForChat(ctx, config) {
 function extractSingleSupportedUrl(text) {
   const input = String(text || '').trim();
   if (!input) return null;
+  const cleanedInput = input.replace(/^[<(\["'\s]+|[>)\]"'\s]+$/g, '');
 
   for (const entry of SUPPORTED_SERVICES) {
-    const match = input.match(entry.pattern);
+    const match = cleanedInput.match(entry.pattern);
     if (!match) continue;
 
     const matchedUrl = match[0].replace(/[),.;!?]+$/, '');
-    const leftover = input.replace(match[0], '').trim();
+    const leftover = cleanedInput.replace(match[0], '').trim();
     if (leftover.length > 0) continue;
 
     const normalizedUrl = /^https?:\/\//i.test(matchedUrl) ? matchedUrl : `https://${matchedUrl}`;
