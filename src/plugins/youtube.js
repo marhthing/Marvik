@@ -152,6 +152,41 @@ async function prepareCookiesFile() {
   }
 }
 
+function getYouTubeCookiesSetupHelp() {
+  return [
+    'YouTube blocked this host and asked to confirm it is not a bot.',
+    '',
+    'To fix it, add your YouTube cookies to the bot:',
+    '1. Open YouTube in your browser and make sure you are logged in.',
+    '2. Export your YouTube cookies in Netscape cookies.txt format.',
+    '3. Put the file in the bot, for example: `cookies/youtube-cookies.txt`',
+    '4. Set `.env` like this: `YOUTUBE_COOKIES_FILE=cookies/youtube-cookies.txt`',
+    '5. Restart the bot.',
+    '',
+    'Easy way to export cookies:',
+    '- Install a browser extension that exports cookies as `cookies.txt` / Netscape format.',
+    '- Export while logged into youtube.com.',
+    '',
+    'If you already have the cookies text, you can also save it with your env command and restart the bot.'
+  ].join('\n');
+}
+
+function getMissingCookiesFileHelp(filePath) {
+  return [
+    `YouTube cookies file is configured but missing: ${filePath}`,
+    '',
+    'To fix it:',
+    '1. Open YouTube in your browser and make sure you are logged in.',
+    '2. Export your YouTube cookies in Netscape cookies.txt format.',
+    `3. Save the file here: ${filePath}`,
+    '4. Restart the bot.',
+    '',
+    'Easy way to export cookies:',
+    '- Install a browser extension that exports cookies as `cookies.txt` / Netscape format.',
+    '- Export while logged into youtube.com.'
+  ].join('\n');
+}
+
 function generateUniqueFilename(prefix = 'yt', extension = 'mp4') {
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 8);
@@ -628,7 +663,7 @@ export default {
           const cookiesState = await prepareCookiesFile();
           if (cookiesState.enabled && !cookiesState.exists) {
             console.error('[youtube] cookies file missing', cookiesState);
-            await ctx.reply(`YouTube cookies file is configured but missing: ${cookiesState.path}`);
+            await ctx.reply(getMissingCookiesFileHelp(cookiesState.path));
             return;
           }
 
@@ -701,7 +736,7 @@ export default {
             } else if (error.message?.includes('Sign in to confirm') || error.message?.includes("you're not a bot")) {
               errorMsg += YTDLP_COOKIES_FILE
                 ? 'YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
-                : 'YouTube blocked this host IP. Configure YOUTUBE_COOKIES or YOUTUBE_COOKIES_FILE.';
+                : getYouTubeCookiesSetupHelp();
             } else if (error.message?.includes('too large')) {
               errorMsg += error.message;
             } else {
@@ -748,7 +783,7 @@ export default {
           const cookiesState = await prepareCookiesFile();
           if (cookiesState.enabled && !cookiesState.exists) {
             console.error('[youtube] cookies file missing', cookiesState);
-            await ctx.reply(`YouTube cookies file is configured but missing: ${cookiesState.path}`);
+            await ctx.reply(getMissingCookiesFileHelp(cookiesState.path));
             return;
           }
 
@@ -779,7 +814,7 @@ export default {
               await ctx.reply(
                 YTDLP_COOKIES_FILE
                   ? 'Failed to download audio: YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
-                  : 'Failed to download audio: YouTube blocked this host IP. Configure YOUTUBE_COOKIES or YOUTUBE_COOKIES_FILE.'
+                  : getYouTubeCookiesSetupHelp()
               );
               return;
             }
