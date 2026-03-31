@@ -106,6 +106,28 @@ function getDownloadOptions(extra = {}) {
   }
 })();
 
+async function prepareCookiesFile() {
+  if (!YOUTUBE_COOKIES_CONFIG || !YTDLP_COOKIES_FILE) return { enabled: false, exists: false };
+
+  try {
+    await fs.ensureDir(path.dirname(YTDLP_COOKIES_FILE));
+
+    if (YOUTUBE_COOKIES_CONFIG.source === 'inline') {
+      await fs.writeFile(YTDLP_COOKIES_FILE, YOUTUBE_COOKIES_CONFIG.content, 'utf8');
+      return { enabled: true, exists: true, source: 'inline', path: YTDLP_COOKIES_FILE };
+    }
+
+    const exists = await fs.pathExists(YTDLP_COOKIES_FILE);
+    return { enabled: true, exists, source: 'file', path: YTDLP_COOKIES_FILE };
+  } catch (error) {
+    console.error('[youtube] prepareCookiesFile failed', {
+      path: YTDLP_COOKIES_FILE,
+      message: error?.message || String(error)
+    });
+    return { enabled: true, exists: false, source: YOUTUBE_COOKIES_CONFIG.source, path: YTDLP_COOKIES_FILE, error };
+  }
+}
+
 function generateUniqueFilename(prefix = 'yt', extension = 'mp4') {
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 8);
@@ -348,6 +370,13 @@ export default {
           const tempDir = path.join(process.cwd(), 'tmp');
           await fs.ensureDir(tempDir);
 
+          const cookiesState = await prepareCookiesFile();
+          if (cookiesState.enabled && !cookiesState.exists) {
+            console.error('[youtube] cookies file missing', cookiesState);
+            await ctx.reply(`YouTube cookies file is configured but missing: ${cookiesState.path}`);
+            return;
+          }
+
           if (shouldReact()) await ctx.react('⏳');
 
           try {
@@ -460,6 +489,13 @@ export default {
 
           const tempDir = path.join(process.cwd(), 'tmp');
           await fs.ensureDir(tempDir);
+
+          const cookiesState = await prepareCookiesFile();
+          if (cookiesState.enabled && !cookiesState.exists) {
+            console.error('[youtube] cookies file missing', cookiesState);
+            await ctx.reply(`YouTube cookies file is configured but missing: ${cookiesState.path}`);
+            return;
+          }
 
           if (shouldReact()) await ctx.react('⏳');
 
