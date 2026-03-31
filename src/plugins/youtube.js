@@ -23,7 +23,10 @@ function resolveCookiesConfig() {
     : null;
 
   if (inlineCookies) {
-    const resolvedInline = inlineCookies.replace(/\\n/g, '\n');
+    const resolvedInline = inlineCookies
+      .replace(/\\r/g, '\r')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t');
     const envCookiesPath = path.resolve(process.cwd(), 'storage', 'youtube-cookies.env.txt');
     return {
       source: 'inline',
