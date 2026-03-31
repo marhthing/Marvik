@@ -13,10 +13,10 @@ const execFileAsync = promisify(execFile);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
-const DEFAULT_VIDEO_FORMAT = 'best[vcodec!=none][acodec!=none]/best[ext=mp4]/best';
-const SHORTS_VIDEO_FORMAT = 'best[ext=mp4]/best/bestvideo+bestaudio';
+const DEFAULT_VIDEO_FORMAT = 'best[vcodec!=none][acodec!=none]/best';
+const SHORTS_VIDEO_FORMAT = 'best';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best';
-const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=ios,mweb';
+const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=mweb,ios;formats=missing_pot';
 
 function resolveCookiesConfig() {
   const inlineCookies = process.env.YOUTUBE_COOKIES?.trim();

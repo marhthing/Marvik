@@ -1,129 +1,115 @@
-import pendingActions from '../utils/pendingActions.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
-import { normalizeWhatsAppJid } from '../utils/whatsappJid.js';
+import { extractMessageText, getMessageContextInfo } from '../utils/messageUtils.js';
+import { normalizeDigits, normalizeWhatsAppJid } from '../utils/whatsappJid.js';
 
-/**
- * send.js - WhatsApp plugin
- * When a user replies to the owner's status with the word "Send",
- * the bot will send the status media/text to that user in their chat, using pendingActions for flow control.
- */
+const SEND_TRIGGER_REGEX = /^(send|sed)$/i;
+
+function isStatusRemoteJid(remoteJid = '') {
+  return remoteJid === 'status@broadcast' || remoteJid.endsWith('@status') || remoteJid.endsWith('@broadcast');
+}
+
+function getOwnerConfigJid(ctx) {
+  const rawOwner = ctx?.bot?.config?.ownerNumber || ctx?.platformAdapter?.config?.ownerNumber || process.env.OWNER_NUMBER || '';
+  return normalizeWhatsAppJid(rawOwner);
+}
+
+function isOwnerStatusParticipant(participant, ownerJid) {
+  const participantDigits = normalizeDigits(participant || '');
+  const ownerDigits = normalizeDigits(ownerJid || '');
+  if (participantDigits && ownerDigits) return participantDigits === ownerDigits;
+  return normalizeWhatsAppJid(participant || '') === normalizeWhatsAppJid(ownerJid || '');
+}
+
+function getQuotedStatusPayload(ctx) {
+  const contextInfo = getMessageContextInfo(ctx?.raw?.message);
+  const quotedMessage = contextInfo?.quotedMessage;
+  const remoteJid = contextInfo?.remoteJid || contextInfo?.remoteJID || 'status@broadcast';
+  const participant = contextInfo?.participant || '';
+  const stanzaId = contextInfo?.stanzaId || contextInfo?.stanzaID || contextInfo?.id || null;
+
+  if (!quotedMessage || !stanzaId || !isStatusRemoteJid(remoteJid)) return null;
+
+  const mediaType = quotedMessage.imageMessage
+    ? 'image'
+    : quotedMessage.videoMessage
+      ? 'video'
+      : quotedMessage.audioMessage
+        ? 'audio'
+        : quotedMessage.documentMessage
+          ? 'document'
+          : null;
+
+  return {
+    quotedMessage,
+    remoteJid,
+    participant,
+    stanzaId,
+    mediaType,
+    caption: quotedMessage.imageMessage?.caption || quotedMessage.videoMessage?.caption || quotedMessage.documentMessage?.caption || '',
+    text: extractMessageText(quotedMessage)
+  };
+}
 
 export default {
   name: 'send',
-  description: 'Send owner status to user when they reply "Send" to owner status',
-  version: '1.0.1',
+  description: 'Send owner status to user when they reply with send',
+  version: '2.0.0',
   author: 'MATDEV',
-  async onLoad(bot) {
-    const whatsappAdapter = bot.getAdapter('whatsapp');
-    if (!whatsappAdapter) {
-      console.error('[send.js] No WhatsApp adapter, aborting');
-      return;
-    }
-    const ownerJid = normalizeWhatsAppJid(bot.config.ownerNumber || process.env.OWNER_NUMBER || '');
-    if (!ownerJid) {
-      console.error('[send.js] No ownerJid, aborting');
-      return;
-    }
 
-    // Listen for replies to owner's status
-    const handleMessagesUpsert = async (ev) => {
-      try {
-        if (ev.type !== 'notify' || !Array.isArray(ev.messages)) {
+  async onMessage(ctx) {
+    if (ctx.platform !== 'whatsapp' || !ctx.text) return;
+    if (!SEND_TRIGGER_REGEX.test(ctx.text.trim())) return;
+
+    const whatsappAdapter = ctx.bot?.getAdapter('whatsapp');
+    if (!whatsappAdapter?.client) return;
+
+    const ownerJid = getOwnerConfigJid(ctx);
+    if (!ownerJid) return;
+
+    const statusPayload = getQuotedStatusPayload(ctx);
+    if (!statusPayload) return;
+    if (!isOwnerStatusParticipant(statusPayload.participant, ownerJid)) return;
+
+    try {
+      if (statusPayload.mediaType) {
+        const buffer = await downloadMediaMessage({
+          key: {
+            remoteJid: statusPayload.remoteJid,
+            fromMe: false,
+            id: statusPayload.stanzaId,
+            participant: statusPayload.participant || ownerJid
+          },
+          message: statusPayload.quotedMessage
+        }, 'buffer', {}, {
+          logger: whatsappAdapter.baileysLogger,
+          reuploadRequest: whatsappAdapter.client.updateMediaMessage
+        });
+
+        if (!buffer) {
+          await ctx.reply('Failed to fetch that status media.');
           return;
         }
-        for (const msg of ev.messages) {
-          try {
-            const remoteJid = msg.key?.remoteJid;
-            if (!remoteJid) continue;
-            const contextInfo = msg.message?.extendedTextMessage?.contextInfo || msg.message?.imageMessage?.contextInfo || msg.message?.videoMessage?.contextInfo || {};
-            const quoted = contextInfo.quotedMessage;
-            const quotedParticipant = normalizeWhatsAppJid(contextInfo.participant || '');
-            const quotedRemoteJid = contextInfo.remoteJid || contextInfo.remoteJID || 'status@broadcast';
-            if (!quoted) continue;
-            if (!(quotedRemoteJid === 'status@broadcast' || quotedRemoteJid.endsWith('@status') || quotedRemoteJid.endsWith('@broadcast'))) continue;
-            if (!quotedParticipant || quotedParticipant !== ownerJid) continue;
-            const text = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
-            if (text.trim().toLowerCase() !== 'send') continue;
-            const userJid = msg.key.participant || msg.key.remoteJid;
-            const statusMsgId = contextInfo.stanzaId || contextInfo.stanzaID || contextInfo.id || null;
-            if (!statusMsgId) continue;
-            if (pendingActions.get(userJid, statusMsgId)) continue;
-            pendingActions.set(userJid, statusMsgId, {
-              type: 'send-status',
-              userId: userJid,
-              data: {
-                quoted,
-                quotedKey: {
-                  remoteJid: quotedRemoteJid,
-                  fromMe: false,
-                  id: statusMsgId,
-                  participant: ownerJid
-                },
-                mediaType: quoted.imageMessage ? 'image' : quoted.videoMessage ? 'video' : quoted.audioMessage ? 'audio' : quoted.documentMessage ? 'document' : null,
-                caption: quoted.imageMessage?.caption || quoted.videoMessage?.caption || '',
-                text: quoted.conversation || quoted.extendedTextMessage?.text || ''
-              },
-              match: (messageText) => /\bsend\b/i.test(messageText),
-              handler: async (ctx) => {
-                const { quoted, quotedKey, mediaType, caption, text } = ctx.pending.data;
-                try {
-                  if (mediaType) {
-                    const buffer = await downloadMediaMessage({ key: quotedKey, message: quoted }, 'buffer', {}, {
-                      logger: whatsappAdapter.baileysLogger,
-                      reuploadRequest: whatsappAdapter.client.updateMediaMessage
-                    });
-                    if (buffer) {
-                      await whatsappAdapter.client.sendMessage(ctx.senderId, {
-                        [mediaType]: buffer,
-                        ...(caption ? { caption } : {})
-                      });
-                      console.log('[send.js] Media sent to', ctx.senderId);
-                    } else {
-                      console.error('[send.js] No buffer returned for media');
-                    }
-                  } else if (text) {
-                    await whatsappAdapter.client.sendMessage(ctx.senderId, { text });
-                    console.log('[send.js] Text sent to', ctx.senderId);
-                  } else {
-                    console.error('[send.js] No media or text to send');
-                  }
-                } catch (err) {
-                  console.error('[send.js] Failed to forward status:', err, JSON.stringify(err));
-                }
-                pendingActions.delete(userJid, statusMsgId);
-              },
-              timeout: 5 * 60 * 1000 // 5 minutes
-            });
-            // Immediately run the handler
-            const ctx = {
-              senderId: userJid,
-              raw: msg,
-              pending: pendingActions.get(userJid, statusMsgId)
-            };
-            try {
-              await pendingActions.get(userJid, statusMsgId)?.handler(ctx);
-            } catch (err) {
-              console.error('[send.js] Handler threw error', err, JSON.stringify(err));
-            }
-          } catch (err) {
-            console.error('[send.js] Error in message loop', err, JSON.stringify(err));
-          }
-        }
-      } catch (err) {
-        console.error('[send.js] Top-level error in messages.upsert', err, JSON.stringify(err));
-      }
-    };
 
-    whatsappAdapter.client?.ev?.on('messages.upsert', handleMessagesUpsert);
-
-    return () => {
-      const eventBus = whatsappAdapter.client?.ev;
-      if (!eventBus) return;
-      if (typeof eventBus.off === 'function') {
-        eventBus.off('messages.upsert', handleMessagesUpsert);
-      } else if (typeof eventBus.removeListener === 'function') {
-        eventBus.removeListener('messages.upsert', handleMessagesUpsert);
+        await whatsappAdapter.client.sendMessage(ctx.chatId, {
+          [statusPayload.mediaType]: buffer,
+          ...(statusPayload.caption ? { caption: statusPayload.caption } : {})
+        });
+        return;
       }
-    };
+
+      if (statusPayload.text) {
+        await whatsappAdapter.client.sendMessage(ctx.chatId, { text: statusPayload.text });
+      }
+    } catch (error) {
+      console.error('[send.js] Failed to forward owner status', {
+        chatId: ctx.chatId,
+        senderId: ctx.senderId,
+        messageId: ctx.messageId,
+        statusId: statusPayload.stanzaId,
+        message: error?.message || String(error),
+        stack: error?.stack || null
+      });
+      await ctx.reply('Failed to send that status.');
+    }
   }
 };
