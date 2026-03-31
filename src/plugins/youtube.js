@@ -48,6 +48,7 @@ function resolveCookiesConfig() {
 
 const YOUTUBE_COOKIES_CONFIG = resolveCookiesConfig();
 const YTDLP_COOKIES_FILE = YOUTUBE_COOKIES_CONFIG?.path || null;
+const YTDLP_BINARY_PATH = youtubedl.constants?.YOUTUBE_DL_PATH || null;
 
 const PROXIES = (process.env.PROXIES || '').split(',').filter(p => p.trim());
 const USER_AGENTS = [
@@ -88,6 +89,19 @@ function getDownloadOptions(extra = {}) {
 }
 
 (async () => {
+  try {
+    if (typeof youtubedl.update === 'function' && YTDLP_BINARY_PATH) {
+      await youtubedl.update(YTDLP_BINARY_PATH);
+      console.log(`[youtube] Updated bundled yt-dlp binary at ${YTDLP_BINARY_PATH}`);
+      return;
+    }
+  } catch (error) {
+    console.error('[youtube] Failed to update bundled yt-dlp binary', {
+      path: YTDLP_BINARY_PATH,
+      message: error?.message || String(error)
+    });
+  }
+
   try {
     await execAsync('yt-dlp -U 2>/dev/null || pip install --upgrade yt-dlp 2>/dev/null || true');
   } catch {}
