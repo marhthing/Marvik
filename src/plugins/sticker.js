@@ -4,87 +4,112 @@ import envMemory from '../utils/envMemory.js';
 import { shouldReact } from '../utils/pendingActions.js';
 import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
 import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
+import { downloadPinterestMediaToBuffer, getPinterestMediaInfo, validatePinterestUrl } from '../utils/pinterest.js';
+
+function isPinterestUrl(value) {
+  return /(?:https?:\/\/)?(?:www\.)?(?:pinterest\.com\/pin\/|pin\.it\/)/i.test(value || '');
+}
 
 export default {
   name: 'sticker',
   description: 'Convert an image to a sticker',
-  version: '1.0.0',
+  version: '1.1.0',
   author: 'MATDEV',
   commands: [
     {
       name: 'sticker',
       aliases: ['st', 's'],
       description: 'Convert an image to a sticker',
-      usage: '.sticker (reply to image/video)',
+      usage: '.sticker (reply to image/video) or .sticker <pinterest url>',
       category: 'media',
       ownerOnly: false,
       adminOnly: false,
       groupOnly: false,
       cooldown: 5,
       async execute(ctx) {
-        const media = getQuotedMediaTarget(ctx, ['image', 'video', 'gif', 'sticker']);
-        
-        if (!media || !['image', 'video', 'gif', 'sticker'].includes(media.type)) {
-          return await ctx.reply('❌ Please reply to an image, video, or gif to convert it to a sticker.');
-        }
-
-        // Download the media buffer
         let buffer;
-        try {
-          buffer = await downloadMediaBuffer(ctx, media);
-        } catch (e) {
-          console.error('[sticker] download error', e?.message || e, e?.stack || '');
-          return await ctx.reply('❌ Failed to download media. The media might have been deleted from WhatsApp servers.');
+        let sourceType = 'image';
+        const input = ctx.args.join(' ').trim();
+
+        if (input && isPinterestUrl(input)) {
+          try {
+            const validatedUrl = await validatePinterestUrl(input);
+            if (!validatedUrl) {
+              return await ctx.reply('❌ Please provide a valid Pinterest URL (pin.it or pinterest.com/pin/).');
+            }
+
+            const mediaInfo = await getPinterestMediaInfo(validatedUrl.url);
+            const videoQualities = mediaInfo.videoQualities.filter(item => !item.url.includes('.m3u8'));
+            const selectedUrl = mediaInfo.isVideo
+              ? videoQualities[0]?.url
+              : mediaInfo.imageQualities[0]?.url;
+
+            if (!selectedUrl) {
+              return await ctx.reply(`❌ No downloadable ${mediaInfo.isVideo ? 'video' : 'image'} found in that Pinterest link.`);
+            }
+
+            sourceType = mediaInfo.isVideo ? 'video' : 'image';
+            buffer = await downloadPinterestMediaToBuffer(selectedUrl);
+          } catch (e) {
+            console.error('[sticker] pinterest download error', e?.message || e, e?.stack || '');
+            return await ctx.reply('❌ Failed to download media from Pinterest. The pin may be private, deleted, or temporarily unavailable.');
+          }
+        } else {
+          const media = getQuotedMediaTarget(ctx, ['image', 'video', 'gif', 'sticker']);
+
+          if (!media || !['image', 'video', 'gif', 'sticker'].includes(media.type)) {
+            return await ctx.reply('❌ Please reply to an image, video, or gif, or use `.sticker <pinterest url>`.');
+          }
+
+          sourceType = media.type;
+          try {
+            buffer = await downloadMediaBuffer(ctx, media);
+          } catch (e) {
+            console.error('[sticker] download error', e?.message || e, e?.stack || '');
+            return await ctx.reply('❌ Failed to download media. The media might have been deleted from WhatsApp servers.');
+          }
         }
 
-        if (!hasValidMediaHeader(buffer) && media.type === 'image') {
+        if (!hasValidMediaHeader(buffer) && sourceType === 'image') {
           const sig = buffer?.slice(0, 16);
           console.error('[sticker] invalid header', {
-            type: media.type,
-            mimetype: media.media?.mimetype,
+            type: sourceType,
             size: buffer?.length,
             head: sig ? sig.toString('hex') : null
           });
           return await ctx.reply('❌ The downloaded image appears corrupted or unsupported.');
         }
 
-        // Import wa-sticker-formatter
         let Sticker, StickerTypes;
         try {
           ({ Sticker, StickerTypes } = await import('wa-sticker-formatter'));
-        } catch (e) {
+        } catch {
           return await ctx.reply('❌ wa-sticker-formatter is not installed. Please run: npm install wa-sticker-formatter');
         }
 
-        // Import config for sticker pack/author
         let config;
         try {
           config = (await import('../config/default.js')).default;
-        } catch (e) {
+        } catch {
           config = {};
         }
-        // Fetch from envMemory (in-memory .env), fallback to config, then hardcoded
+
         const stickerPack = envMemory.get('STICKER_PACK') || config.stickerPack || 'MATDEV Bot';
         const stickerAuthor = envMemory.get('STICKER_AUTHOR') || config.stickerAuthor || 'Bot';
 
-        // Send processing indicator
-        if (shouldReact()) await ctx.react('?');
+        if (shouldReact()) await ctx.react('⏳');
 
-        // Create sticker with optimized settings
         try {
           const sticker = new Sticker(buffer, {
             pack: stickerPack,
             author: stickerAuthor,
-            type: StickerTypes.DEFAULT, // Faster than FULL
-            quality: 30, // Lower quality = faster processing (30-60 range)
-            categories: ['??'],
+            type: StickerTypes.DEFAULT,
+            quality: 30,
+            categories: ['📌']
           });
-          
+
           const stickerBuffer = await sticker.toBuffer();
-          
-          // Remove processing indicator
-          if (shouldReact()) await ctx.react('?');
-          
+          if (shouldReact()) await ctx.react('✅');
           await ctx._adapter.sendMedia(ctx.chatId, stickerBuffer, { type: 'sticker' });
         } catch (e) {
           console.error('[sticker] Create sticker error:', e?.message || e, e?.stack || '');
@@ -94,16 +119,16 @@ export default {
               author: stickerAuthor,
               type: StickerTypes.FULL,
               quality: 50,
-              categories: ['??']
+              categories: ['📌']
             });
             const stickerBuffer = await sticker.toBuffer();
-            if (shouldReact()) await ctx.react('?');
+            if (shouldReact()) await ctx.react('✅');
             await ctx._adapter.sendMedia(ctx.chatId, stickerBuffer, { type: 'sticker' });
             return;
           } catch (e2) {
             console.error('[sticker] Create sticker FULL error:', e2?.message || e2, e2?.stack || '');
           }
-          if (shouldReact()) await ctx.react('?');
+          if (shouldReact()) await ctx.react('❌');
           await ctx.reply(`❌ Failed to create sticker. ${e?.message ? `Error: ${e.message}` : 'Make sure the media is a valid image or video.'}`);
         }
       }
@@ -127,7 +152,7 @@ export default {
 
         const stickerMessage = stickerTarget.media;
         const fileSha256 = stickerMessage.fileSha256;
-        
+
         if (!fileSha256) {
           return await ctx.reply('❌ Could not identify the sticker.');
         }
@@ -135,7 +160,7 @@ export default {
         const stickerId = Buffer.from(fileSha256).toString('base64');
         const storageUtil = (await import('../utils/storageUtil.js')).default;
         const stickerCommands = storageUtil.getStickerCommands();
-        
+
         stickerCommands[stickerId] = cmd.startsWith('.') ? cmd.slice(1) : cmd;
         storageUtil.setStickerCommands(stickerCommands);
 
@@ -156,7 +181,7 @@ export default {
 
         const stickerMessage = stickerTarget.media;
         const fileSha256 = stickerMessage.fileSha256;
-        
+
         if (!fileSha256) {
           return await ctx.reply('❌ Could not identify the sticker.');
         }
@@ -164,7 +189,7 @@ export default {
         const stickerId = Buffer.from(fileSha256).toString('base64');
         const storageUtil = (await import('../utils/storageUtil.js')).default;
         const stickerCommands = storageUtil.getStickerCommands();
-        
+
         if (!stickerCommands[stickerId]) {
           return await ctx.reply('❌ This sticker has no command bound to it.');
         }
