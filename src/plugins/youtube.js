@@ -69,6 +69,7 @@ function getDownloadOptions(extra = {}) {
   const options = {
     noWarnings: true,
     noCheckCertificates: true,
+    ignoreConfig: true,
     preferFreeFormats: true,
     noPlaylist: true,
     retries: 3,
