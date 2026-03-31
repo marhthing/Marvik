@@ -15,13 +15,36 @@ const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
 const DEFAULT_PROGRESSIVE_VIDEO_FORMAT = '18/b[height<=360][ext=mp4]/b[ext=mp4]/b[height<=480]/best';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bv*[height<=480]+ba/b[height<=480]/best';
 
-function resolveCookiesFile() {
-  const raw = process.env.YTDLP_COOKIES_FILE?.trim();
-  if (!raw) return null;
-  return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+function resolveCookiesConfig() {
+  const inlineCookies = process.env.YOUTUBE_COOKIES?.trim();
+  const rawPath = process.env.YOUTUBE_COOKIES_FILE?.trim() || process.env.YTDLP_COOKIES_FILE?.trim();
+  const filePath = rawPath
+    ? (path.isAbsolute(rawPath) ? rawPath : path.resolve(process.cwd(), rawPath))
+    : null;
+
+  if (inlineCookies) {
+    const resolvedInline = inlineCookies.replace(/\\n/g, '\n');
+    const envCookiesPath = path.resolve(process.cwd(), 'storage', 'youtube-cookies.env.txt');
+    return {
+      source: 'inline',
+      path: envCookiesPath,
+      content: resolvedInline
+    };
+  }
+
+  if (filePath) {
+    return {
+      source: 'file',
+      path: filePath,
+      content: null
+    };
+  }
+
+  return null;
 }
 
-const YTDLP_COOKIES_FILE = resolveCookiesFile();
+const YOUTUBE_COOKIES_CONFIG = resolveCookiesConfig();
+const YTDLP_COOKIES_FILE = YOUTUBE_COOKIES_CONFIG?.path || null;
 
 const PROXIES = (process.env.PROXIES || '').split(',').filter(p => p.trim());
 const USER_AGENTS = [
@@ -64,6 +87,20 @@ function getDownloadOptions(extra = {}) {
   try {
     await execAsync('yt-dlp -U 2>/dev/null || pip install --upgrade yt-dlp 2>/dev/null || true');
   } catch {}
+})();
+
+(async () => {
+  if (!YOUTUBE_COOKIES_CONFIG || YOUTUBE_COOKIES_CONFIG.source !== 'inline') return;
+  try {
+    await fs.ensureDir(path.dirname(YOUTUBE_COOKIES_CONFIG.path));
+    await fs.writeFile(YOUTUBE_COOKIES_CONFIG.path, YOUTUBE_COOKIES_CONFIG.content, 'utf8');
+    console.log(`[youtube] Wrote inline cookies to ${YOUTUBE_COOKIES_CONFIG.path}`);
+  } catch (error) {
+    console.error('[youtube] Failed to write inline cookies file', {
+      path: YOUTUBE_COOKIES_CONFIG.path,
+      message: error?.message || String(error)
+    });
+  }
 })();
 
 function generateUniqueFilename(prefix = 'yt', extension = 'mp4') {
