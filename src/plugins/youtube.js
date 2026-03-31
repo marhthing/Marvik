@@ -13,9 +13,10 @@ const execFileAsync = promisify(execFile);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
-const DEFAULT_VIDEO_FORMAT = 'best[height<=480][vcodec!=none][acodec!=none]/best[ext=mp4]/best';
+const DEFAULT_VIDEO_FORMAT = 'best[vcodec!=none][acodec!=none]/best[ext=mp4]/best';
+const SHORTS_VIDEO_FORMAT = 'best[ext=mp4]/best/bestvideo+bestaudio';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best';
-const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=tv,web_safari,android_vr;formats=incomplete';
+const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=ios,mweb';
 
 function resolveCookiesConfig() {
   const inlineCookies = process.env.YOUTUBE_COOKIES?.trim();
@@ -170,6 +171,10 @@ function validateYouTubeUrl(url) {
   return null;
 }
 
+function isYouTubeShort(url) {
+  return /youtube\.com\/shorts\//i.test(url);
+}
+
 function extractYouTubeUrlFromObject(obj) {
   const ytUrlRegex = /https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?v=|embed\/|v\/|shorts\/)|youtu\.be\/)[a-zA-Z0-9_-]{11}/i;
   if (!obj || typeof obj !== 'object') return null;
@@ -295,7 +300,6 @@ async function getVideoFormats(url) {
   const metadataAttempts = [
     { dumpSingleJson: true },
     { dumpSingleJson: true, preferFreeFormats: false },
-    { dumpSingleJson: true, youtubeSkipDashManifest: true, youtubeSkipHlsManifest: true },
     { dumpSingleJson: true, format: 'b/bv+ba' }
   ];
 
@@ -447,12 +451,18 @@ async function downloadVideoWithSelectors(url, selectors, tempDir) {
 }
 
 async function downloadVideoWithFallback(url, tempDir) {
-  const attempts = [
-    DEFAULT_VIDEO_FORMAT,
-    'best[ext=mp4]/best',
-    FALLBACK_MERGE_VIDEO_FORMAT,
-    'bestvideo*+bestaudio/best'
-  ];
+  const attempts = isYouTubeShort(url)
+    ? [
+        SHORTS_VIDEO_FORMAT,
+        'best',
+        'bestvideo+bestaudio/best'
+      ]
+    : [
+        DEFAULT_VIDEO_FORMAT,
+        'best[ext=mp4]/best',
+        FALLBACK_MERGE_VIDEO_FORMAT,
+        'bestvideo*+bestaudio/best'
+      ];
 
   let lastError = null;
   for (const formatString of attempts) {
