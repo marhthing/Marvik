@@ -6,14 +6,14 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { shouldReact } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { sendVideoFile } from '../utils/downloadFlow.js';
+import { formatFileSize, promptNumericSelection, sendVideoFile } from '../utils/downloadFlow.js';
 
 const execAsync = promisify(exec);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
-const DEFAULT_PROGRESSIVE_VIDEO_FORMAT = '18/b[height<=360][ext=mp4]/b[ext=mp4]/b[height<=480]/best';
-const FALLBACK_MERGE_VIDEO_FORMAT = 'bv*[height<=480]+ba/b[height<=480]/best';
+const DEFAULT_VIDEO_FORMAT = 'best[height<=480][vcodec!=none][acodec!=none]/best[ext=mp4]/best';
+const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best';
 
 function resolveCookiesConfig() {
   const inlineCookies = process.env.YOUTUBE_COOKIES?.trim();
@@ -159,11 +159,40 @@ function formatViews(count) {
   return `${count} views`;
 }
 
-async function getVideoInfo(url) {
+function getFormatStringForHeight(height) {
+  return `best[height<=${height}][vcodec!=none][acodec!=none]/bestvideo*[height<=${height}]+bestaudio/best[height<=${height}]/best`;
+}
+
+async function getVideoFormats(url) {
   const info = await youtubedl(url, getDownloadOptions({ dumpSingleJson: true }));
+  const formats = [];
+  const seenHeights = new Set();
+
+  for (const format of info.formats || []) {
+    const height = format.height || 0;
+    const hasVideo = format.vcodec && format.vcodec !== 'none';
+    if (!hasVideo || !height || height > 1080) continue;
+
+    const normalizedHeight = [2160, 1440, 1080, 720, 480, 360, 240, 144]
+      .find(item => height >= item) || height;
+
+    if (seenHeights.has(normalizedHeight)) continue;
+    seenHeights.add(normalizedHeight);
+
+    formats.push({
+      quality: `${normalizedHeight}p`,
+      height: normalizedHeight,
+      size: format.filesize || format.filesize_approx || 0,
+      formatString: getFormatStringForHeight(normalizedHeight)
+    });
+  }
+
+  formats.sort((a, b) => b.height - a.height);
+
   return {
     title: info.title || 'YouTube video',
-    duration: info.duration || 0
+    duration: info.duration || 0,
+    formats: formats.slice(0, 6)
   };
 }
 
@@ -205,9 +234,10 @@ async function downloadVideoWithFormat(url, formatString, tempDir) {
 
 async function downloadVideoWithFallback(url, tempDir) {
   const attempts = [
-    DEFAULT_PROGRESSIVE_VIDEO_FORMAT,
-    'b[ext=mp4]/b/best',
-    FALLBACK_MERGE_VIDEO_FORMAT
+    DEFAULT_VIDEO_FORMAT,
+    'best[ext=mp4]/best',
+    FALLBACK_MERGE_VIDEO_FORMAT,
+    'bestvideo*+bestaudio/best'
   ];
 
   let lastError = null;
@@ -265,8 +295,10 @@ async function downloadAudioWithYtDlp(url, tempDir) {
   }
 }
 
-async function deliverYouTubeVideo(ctx, url, tempDir, title) {
-  const result = await downloadVideoWithFallback(url, tempDir);
+async function deliverYouTubeVideo(ctx, url, tempDir, title, formatString = null) {
+  const result = formatString
+    ? await downloadVideoWithFormat(url, formatString, tempDir)
+    : await downloadVideoWithFallback(url, tempDir);
   try {
     await sendVideoFile(ctx, result.path, {
       size: result.size,
@@ -283,13 +315,13 @@ async function deliverYouTubeVideo(ctx, url, tempDir, title) {
 export default {
   name: 'youtube',
   description: 'YouTube video and audio downloader',
-  version: '2.4.0',
+  version: '2.5.0',
   author: 'MATDEV',
   commands: [
     {
       name: 'ytv',
       aliases: ['ytvideo', 'yt'],
-      description: 'Download YouTube video with lightweight hosted-friendly fallback',
+      description: 'Download YouTube video with quality selection',
       usage: '.ytv <url>',
       category: 'download',
       ownerOnly: false,
@@ -319,9 +351,50 @@ export default {
           if (shouldReact()) await ctx.react('⏳');
 
           try {
-            const { title } = await getVideoInfo(validatedUrl.url);
-            await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title);
-            if (shouldReact()) await ctx.react('✅');
+            const { title, duration, formats } = await getVideoFormats(validatedUrl.url);
+
+            if (formats.length === 0) {
+              await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title);
+              if (shouldReact()) await ctx.react('✅');
+              return;
+            }
+
+            const choices = formats.map((format, index) => ({
+              label: `${index + 1} - ${format.quality}${format.size ? ` (${formatFileSize(format.size)})` : ''}`,
+              formatString: format.formatString
+            }));
+
+            if (choices.length === 1) {
+              await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title, choices[0].formatString);
+              if (shouldReact()) await ctx.react('✅');
+              return;
+            }
+
+            let prompt = `*${title}*\n`;
+            if (duration) prompt += `Duration: ${formatDuration(duration)}\n\n`;
+            prompt += 'Select video quality by replying with the number:\n';
+            prompt += choices.map(choice => choice.label).join('\n');
+
+            await promptNumericSelection(ctx, {
+              type: 'youtube_quality',
+              prompt,
+              choices,
+              data: { url: validatedUrl.url, tempDir, title },
+              handler: async (replyCtx, selected, choice, pending) => {
+                if (shouldReact()) await replyCtx.react('⏳');
+                try {
+                  await deliverYouTubeVideo(replyCtx, pending.data.url, pending.data.tempDir, pending.data.title, selected.formatString);
+                  if (shouldReact()) await replyCtx.react('✅');
+                } catch (error) {
+                  if (shouldReact()) await replyCtx.react('❌');
+                  const errorMsg = error.message?.includes('too large')
+                    ? error.message
+                    : 'Failed to download selected quality.';
+                  await replyCtx.reply(errorMsg);
+                }
+                return true;
+              }
+            });
           } catch (error) {
             console.error('[youtube] .ytv execute failed', {
               url: validatedUrl.url,
@@ -339,10 +412,12 @@ export default {
               errorMsg += 'Video is private or unavailable.';
             } else if (error.message?.includes('age')) {
               errorMsg += 'Video is age-restricted.';
-            } else if (error.message?.includes('Sign in to confirm you’re not a bot') || error.message?.includes("Sign in to confirm you're not a bot")) {
+            } else if (error.message?.includes('Requested format is not available')) {
+              errorMsg += 'The selected/default format was not available for this video. Try another quality.';
+            } else if (error.message?.includes('Sign in to confirm') || error.message?.includes("you're not a bot")) {
               errorMsg += YTDLP_COOKIES_FILE
                 ? 'YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
-                : 'YouTube blocked this host IP. Configure YTDLP_COOKIES_FILE with exported YouTube cookies.';
+                : 'YouTube blocked this host IP. Configure YOUTUBE_COOKIES or YOUTUBE_COOKIES_FILE.';
             } else if (error.message?.includes('too large')) {
               errorMsg += error.message;
             } else {
@@ -409,11 +484,11 @@ export default {
               stack: error?.stack || null
             });
             if (shouldReact()) await ctx.react('❌');
-            if (error.message?.includes('Sign in to confirm you’re not a bot') || error.message?.includes("Sign in to confirm you're not a bot")) {
+            if (error.message?.includes('Sign in to confirm') || error.message?.includes("you're not a bot")) {
               await ctx.reply(
                 YTDLP_COOKIES_FILE
                   ? 'Failed to download audio: YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
-                  : 'Failed to download audio: YouTube blocked this host IP. Configure YTDLP_COOKIES_FILE with exported YouTube cookies.'
+                  : 'Failed to download audio: YouTube blocked this host IP. Configure YOUTUBE_COOKIES or YOUTUBE_COOKIES_FILE.'
               );
               return;
             }
