@@ -14,6 +14,7 @@ const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
 const DEFAULT_VIDEO_FORMAT = 'best[height<=480][vcodec!=none][acodec!=none]/best[ext=mp4]/best';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best';
+const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=tv,web_safari,android_vr;formats=incomplete';
 
 function resolveCookiesConfig() {
   const inlineCookies = process.env.YOUTUBE_COOKIES?.trim();
@@ -72,6 +73,7 @@ function getDownloadOptions(extra = {}) {
     noCheckCertificates: true,
     ignoreConfig: true,
     preferFreeFormats: true,
+    extractorArgs: YOUTUBE_EXTRACTOR_ARGS,
     noPlaylist: true,
     retries: 3,
     socketTimeout: 30,
