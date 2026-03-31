@@ -240,6 +240,14 @@ function buildPreferredMergeSelector(formatId, ext, hasAudio) {
   return `${formatId}+bestaudio/best`;
 }
 
+function buildProgressiveSelector(height, ext) {
+  const progressiveBase = `best[height<=${height}][vcodec!=none][acodec!=none]`;
+  if (ext === 'mp4') {
+    return `${progressiveBase}[ext=mp4]/${progressiveBase}/best[ext=mp4]/best`;
+  }
+  return `${progressiveBase}/best[ext=${ext}]/best`;
+}
+
 function buildYtDlpCliArgs(url, extraArgs = []) {
   const args = [
     '--no-warnings',
@@ -403,13 +411,20 @@ async function getVideoFormats(url) {
 
     const bestCandidate = sortedCandidates[0];
     const directSelectors = [];
+    const progressiveSelectors = [];
 
     for (const candidate of sortedCandidates) {
       const hasAudio = candidate.acodec && candidate.acodec !== 'none';
+      if (hasAudio) {
+        progressiveSelectors.push(candidate.format_id);
+        progressiveSelectors.push(buildProgressiveSelector(normalizedHeight, candidate.ext));
+        continue;
+      }
       directSelectors.push(buildPreferredMergeSelector(candidate.format_id, candidate.ext, hasAudio));
     }
 
     const selectorChain = Array.from(new Set([
+      ...progressiveSelectors,
       ...directSelectors,
       `bestvideo*[height<=${normalizedHeight}]+bestaudio/best[height<=${normalizedHeight}][vcodec!=none][acodec!=none]/best[height<=${normalizedHeight}]/best`
     ]));
