@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import { readEnvObject, setEnvValue, removeEnvValue } from '../utils/envStore.js';
 
 const EXCLUDED_KEYS = ['BOT_NAME', 'LOG_LEVEL', 'OWNER_NUMBER'];
@@ -15,6 +17,19 @@ function normalizeEnvValueForStorage(key, value) {
 function formatEnvValueForDisplay(key, value) {
   if (HIDDEN_KEYS.includes(key)) return '[hidden]';
   return value;
+}
+
+function writeYouTubeCookiesFile(rawValue) {
+  const normalized = String(rawValue)
+    .replace(/\r/g, '')
+    .replace(/\\r/g, '\r')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+  const relativePath = path.join('cookies', 'youtube-cookies.txt');
+  const absolutePath = path.resolve(process.cwd(), relativePath);
+  fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+  fs.writeFileSync(absolutePath, normalized, 'utf8');
+  return { relativePath, absolutePath };
 }
 
 export default {
@@ -69,6 +84,14 @@ export default {
 
           if (EXCLUDED_KEYS.includes(key)) {
             await ctx.reply(`❌ You cannot update or add ${key} via this command.`);
+            return;
+          }
+
+          if (key === 'YOUTUBE_COOKIES') {
+            const { relativePath } = writeYouTubeCookiesFile(value);
+            setEnvValue('YOUTUBE_COOKIES_FILE', relativePath.replace(/\\/g, '/'));
+            removeEnvValue('YOUTUBE_COOKIES');
+            await ctx.reply(`✅ Saved YouTube cookies to ${relativePath.replace(/\\/g, '/')} and updated YOUTUBE_COOKIES_FILE.`);
             return;
           }
 
