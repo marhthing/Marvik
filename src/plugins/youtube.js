@@ -74,6 +74,7 @@ function getDownloadOptions(extra = {}) {
     noWarnings: true,
     noCheckCertificates: true,
     ignoreConfig: true,
+    jsRuntimes: 'node',
     preferFreeFormats: true,
     extractorArgs: YOUTUBE_EXTRACTOR_ARGS,
     noPlaylist: true,
@@ -97,7 +98,6 @@ function getDownloadOptions(extra = {}) {
     if (typeof youtubedl.update === 'function' && YTDLP_BINARY_PATH) {
       await youtubedl.update(YTDLP_BINARY_PATH);
       console.log(`[youtube] Updated bundled yt-dlp binary at ${YTDLP_BINARY_PATH}`);
-      return;
     }
   } catch (error) {
     console.error('[youtube] Failed to update bundled yt-dlp binary', {
@@ -107,7 +107,12 @@ function getDownloadOptions(extra = {}) {
   }
 
   try {
-    await execAsync('yt-dlp -U 2>/dev/null || pip install --upgrade yt-dlp 2>/dev/null || true');
+    if (YTDLP_BINARY_PATH) {
+      await execFileAsync(YTDLP_BINARY_PATH, ['-U'], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
+    } else {
+      await execAsync('yt-dlp -U 2>/dev/null || pip install --upgrade yt-dlp 2>/dev/null || true');
+    }
+    console.log('[youtube] yt-dlp self-update completed');
   } catch {}
 })();
 
@@ -171,6 +176,23 @@ function validateYouTubeUrl(url) {
   return null;
 }
 
+function normalizeYouTubeUrl(url) {
+  if (!url || typeof url !== 'string') return url;
+
+  const shortsMatch = url.match(/youtube\.com\/shorts\/([a-zA-Z0-9_-]{11})/i);
+  if (shortsMatch?.[1]) {
+    return `https://www.youtube.com/watch?v=${shortsMatch[1]}`;
+  }
+
+  try {
+    const normalized = new URL(url.trim());
+    normalized.searchParams.delete('si');
+    return normalized.toString();
+  } catch {
+    return url;
+  }
+}
+
 function isYouTubeShort(url) {
   return /youtube\.com\/shorts\//i.test(url);
 }
@@ -210,6 +232,7 @@ function buildYtDlpCliArgs(url, extraArgs = []) {
     '--no-check-certificates',
     '--ignore-config',
     '--prefer-free-formats',
+    '--js-runtimes', 'node',
     '--no-playlist',
     '--retries', '3',
     '--socket-timeout', '30',
@@ -223,7 +246,7 @@ function buildYtDlpCliArgs(url, extraArgs = []) {
   if (proxy) args.push('--proxy', proxy);
   if (YTDLP_COOKIES_FILE) args.push('--cookies', YTDLP_COOKIES_FILE);
 
-  args.push(...extraArgs, url);
+  args.push(...extraArgs, normalizeYouTubeUrl(url));
   return args;
 }
 
@@ -295,6 +318,7 @@ async function getVideoFormatsFromList(url) {
 }
 
 async function getVideoFormats(url) {
+  url = normalizeYouTubeUrl(url);
   let info = null;
   let lastError = null;
   const metadataAttempts = [
@@ -399,6 +423,7 @@ async function getVideoFormats(url) {
 }
 
 async function downloadVideoWithFormat(url, formatString, tempDir) {
+  url = normalizeYouTubeUrl(url);
   const outputPath = path.join(tempDir, generateUniqueFilename('yt_video', 'mp4'));
   try {
     await youtubedl(url, getDownloadOptions({
@@ -451,6 +476,7 @@ async function downloadVideoWithSelectors(url, selectors, tempDir) {
 }
 
 async function downloadVideoWithFallback(url, tempDir) {
+  url = normalizeYouTubeUrl(url);
   const attempts = isYouTubeShort(url)
     ? [
         SHORTS_VIDEO_FORMAT,
@@ -483,6 +509,7 @@ async function downloadVideoWithFallback(url, tempDir) {
 }
 
 async function downloadAudioWithYtDlp(url, tempDir) {
+  url = normalizeYouTubeUrl(url);
   const outputPath = path.join(tempDir, generateUniqueFilename('yt_audio', 'm4a'));
   try {
     const info = await youtubedl(url, getDownloadOptions({ dumpSingleJson: true }));
@@ -520,6 +547,7 @@ async function downloadAudioWithYtDlp(url, tempDir) {
 }
 
 async function deliverYouTubeVideo(ctx, url, tempDir, title, formatString = null) {
+  url = normalizeYouTubeUrl(url);
   const result = formatString
     ? await downloadVideoWithSelectors(url, formatString, tempDir)
     : await downloadVideoWithFallback(url, tempDir);
@@ -564,7 +592,7 @@ export default {
             return await ctx.reply('Please provide a YouTube URL\n\nUsage: .ytv <url>');
           }
 
-          const validatedUrl = validateYouTubeUrl(url);
+          const validatedUrl = validateYouTubeUrl(normalizeYouTubeUrl(url));
           if (!validatedUrl) {
             return await ctx.reply('Please provide a valid YouTube URL');
           }
@@ -684,7 +712,7 @@ export default {
             return await ctx.reply('Please provide a YouTube URL\n\nUsage: .yta <url>');
           }
 
-          const validatedUrl = validateYouTubeUrl(url);
+          const validatedUrl = validateYouTubeUrl(normalizeYouTubeUrl(url));
           if (!validatedUrl) {
             return await ctx.reply('Please provide a valid YouTube URL');
           }
