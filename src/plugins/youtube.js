@@ -2,13 +2,14 @@ import youtubedl from 'youtube-dl-exec';
 import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import fs from 'fs-extra';
 import path from 'path';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import { shouldReact } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
 import { formatFileSize, promptNumericSelection, sendVideoFile } from '../utils/downloadFlow.js';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
@@ -198,6 +199,96 @@ function formatViews(count) {
   return `${count} views`;
 }
 
+function buildYtDlpCliArgs(url, extraArgs = []) {
+  const args = [
+    '--no-warnings',
+    '--no-check-certificates',
+    '--ignore-config',
+    '--prefer-free-formats',
+    '--no-playlist',
+    '--retries', '3',
+    '--socket-timeout', '30',
+    '--extractor-args', YOUTUBE_EXTRACTOR_ARGS,
+    '--add-header', 'referer:https://www.youtube.com/',
+    '--add-header', `user-agent:${getRandomUserAgent()}`,
+    '--add-header', 'accept-language:en-US,en;q=0.9'
+  ];
+
+  const proxy = getRandomProxy();
+  if (proxy) args.push('--proxy', proxy);
+  if (YTDLP_COOKIES_FILE) args.push('--cookies', YTDLP_COOKIES_FILE);
+
+  args.push(...extraArgs, url);
+  return args;
+}
+
+function parseHeightFromFormatText(text) {
+  if (!text) return 0;
+  const resolutionMatch = text.match(/(\d{2,5})x(\d{2,5})/);
+  if (resolutionMatch) return Number(resolutionMatch[2]) || 0;
+  const qualityMatch = text.match(/(^|\s)(\d{3,4})p(\s|$)/i);
+  if (qualityMatch) return Number(qualityMatch[2]) || 0;
+  return 0;
+}
+
+async function getVideoFormatsFromList(url) {
+  const binaryPath = YTDLP_BINARY_PATH || 'yt-dlp';
+  const args = buildYtDlpCliArgs(url, ['--list-formats']);
+
+  try {
+    const { stdout } = await execFileAsync(binaryPath, args, {
+      timeout: 60000,
+      maxBuffer: 10 * 1024 * 1024
+    });
+
+    const lines = String(stdout || '')
+      .split(/\r?\n/)
+      .map(line => line.trimEnd())
+      .filter(Boolean);
+
+    const titleLine = lines.find(line => !line.startsWith('[info]') && !/^ID\s+EXT/i.test(line));
+    const rawFormats = [];
+
+    for (const line of lines) {
+      if (/^\[info\]/i.test(line) || /^ID\s+EXT/i.test(line) || /^-+\s*-+/i.test(line)) continue;
+
+      const match = line.match(/^(\S+)\s+(\S+)\s+(.+)$/);
+      if (!match) continue;
+
+      const [, formatId, ext, details] = match;
+      if (/audio only|images|storyboard/i.test(details)) continue;
+      if (!/video only|mp4a|audio/i.test(details) && !/\d{2,5}x\d{2,5}|\d{3,4}p/i.test(details)) continue;
+
+      const height = parseHeightFromFormatText(details);
+      if (!height || height > 1080) continue;
+
+      rawFormats.push({
+        format_id: formatId,
+        ext,
+        height,
+        acodec: /video only/i.test(details) ? 'none' : 'unknown',
+        fps: Number(details.match(/(\d{2,3})fps/i)?.[1] || 0),
+        tbr: Number(details.match(/(\d+(?:\.\d+)?)k\b/i)?.[1] || 0),
+        filesize_approx: 0
+      });
+    }
+
+    return {
+      title: titleLine || 'YouTube video',
+      duration: 0,
+      formats: rawFormats
+    };
+  } catch (error) {
+    console.error('[youtube] getVideoFormatsFromList failed', {
+      url,
+      message: error?.message || String(error),
+      stderr: error?.stderr || null,
+      stdout: error?.stdout || null
+    });
+    throw error;
+  }
+}
+
 async function getVideoFormats(url) {
   let info = null;
   let lastError = null;
@@ -224,7 +315,11 @@ async function getVideoFormats(url) {
   }
 
   if (!info) {
-    throw lastError || new Error('Failed to fetch YouTube metadata');
+    try {
+      info = await getVideoFormatsFromList(url);
+    } catch (fallbackError) {
+      throw lastError || fallbackError || new Error('Failed to fetch YouTube metadata');
+    }
   }
 
   const groupedFormats = new Map();
