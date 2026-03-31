@@ -139,6 +139,14 @@ async function downloadVideoWithFormat(url, formatString, tempDir) {
 
     return { path: outputPath, size: stats.size };
   } catch (error) {
+    console.error('[youtube] downloadVideoWithFormat failed', {
+      url,
+      formatString,
+      outputPath,
+      message: error?.message || String(error),
+      stderr: error?.stderr || null,
+      stdout: error?.stdout || null
+    });
     if (await fs.pathExists(outputPath)) {
       await fs.unlink(outputPath).catch(() => {});
     }
@@ -159,6 +167,11 @@ async function downloadVideoWithFallback(url, tempDir) {
       const result = await downloadVideoWithFormat(url, formatString, tempDir);
       return { ...result, formatString };
     } catch (error) {
+      console.error('[youtube] fallback attempt failed', {
+        url,
+        formatString,
+        message: error?.message || String(error)
+      });
       lastError = error;
     }
   }
@@ -189,6 +202,13 @@ async function downloadAudioWithYtDlp(url, tempDir) {
 
     return { path: outputPath, size: stats.size, title: info.title || 'audio' };
   } catch (error) {
+    console.error('[youtube] downloadAudioWithYtDlp failed', {
+      url,
+      outputPath,
+      message: error?.message || String(error),
+      stderr: error?.stderr || null,
+      stdout: error?.stdout || null
+    });
     if (await fs.pathExists(outputPath)) {
       await fs.unlink(outputPath).catch(() => {});
     }
@@ -254,6 +274,16 @@ export default {
             await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title);
             if (shouldReact()) await ctx.react('✅');
           } catch (error) {
+            console.error('[youtube] .ytv execute failed', {
+              url: validatedUrl.url,
+              chatId: ctx.chatId,
+              senderId: ctx.senderId,
+              isFromMe: ctx.isFromMe,
+              message: error?.message || String(error),
+              stderr: error?.stderr || null,
+              stdout: error?.stdout || null,
+              stack: error?.stack || null
+            });
             if (shouldReact()) await ctx.react('❌');
             let errorMsg = 'Download failed. ';
             if (error.message?.includes('private')) {
@@ -315,6 +345,16 @@ export default {
             if (shouldReact()) await ctx.react('✅');
             await fs.unlink(result.path).catch(() => {});
           } catch (error) {
+            console.error('[youtube] .yta execute failed', {
+              url: validatedUrl.url,
+              chatId: ctx.chatId,
+              senderId: ctx.senderId,
+              isFromMe: ctx.isFromMe,
+              message: error?.message || String(error),
+              stderr: error?.stderr || null,
+              stdout: error?.stdout || null,
+              stack: error?.stack || null
+            });
             if (shouldReact()) await ctx.react('❌');
             await ctx.reply(`Failed to download audio: ${error.message}`);
           }
