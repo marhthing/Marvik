@@ -13,7 +13,7 @@ const execFileAsync = promisify(execFile);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
-const DEFAULT_VIDEO_FORMAT = 'best[vcodec!=none][acodec!=none]/best';
+const DEFAULT_VIDEO_FORMAT = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[vcodec!=none][acodec!=none]/best';
 const SHORTS_VIDEO_FORMAT = 'best';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best';
 const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=mweb,ios;formats=missing_pot';
@@ -226,6 +226,20 @@ function formatViews(count) {
   return `${count} views`;
 }
 
+function buildPreferredMergeSelector(formatId, ext, hasAudio) {
+  if (hasAudio) return formatId;
+
+  if (ext === 'mp4') {
+    return `${formatId}+bestaudio[ext=m4a]/${formatId}+bestaudio[acodec^=mp4a]/${formatId}+bestaudio/best`;
+  }
+
+  if (ext === 'webm') {
+    return `${formatId}+bestaudio[ext=webm]/${formatId}+bestaudio[acodec=opus]/${formatId}+bestaudio/best`;
+  }
+
+  return `${formatId}+bestaudio/best`;
+}
+
 function buildYtDlpCliArgs(url, extraArgs = []) {
   const args = [
     '--no-warnings',
@@ -392,11 +406,7 @@ async function getVideoFormats(url) {
 
     for (const candidate of sortedCandidates) {
       const hasAudio = candidate.acodec && candidate.acodec !== 'none';
-      directSelectors.push(
-        hasAudio
-          ? candidate.format_id
-          : `${candidate.format_id}+bestaudio/best`
-      );
+      directSelectors.push(buildPreferredMergeSelector(candidate.format_id, candidate.ext, hasAudio));
     }
 
     const selectorChain = Array.from(new Set([
