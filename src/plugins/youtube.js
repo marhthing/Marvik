@@ -1,16 +1,19 @@
 import youtubedl from 'youtube-dl-exec';
+import ffmpegInstaller from '@ffmpeg-installer/ffmpeg';
 import fs from 'fs-extra';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { shouldReact } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendVideoFile } from '../utils/downloadFlow.js';
+import { sendVideoFile } from '../utils/downloadFlow.js';
 
 const execAsync = promisify(exec);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
+const DEFAULT_PROGRESSIVE_VIDEO_FORMAT = '18/b[height<=360][ext=mp4]/b[ext=mp4]/b[height<=480]/best';
+const FALLBACK_MERGE_VIDEO_FORMAT = 'bv*[height<=480]+ba/b[height<=480]/best';
 
 const PROXIES = (process.env.PROXIES || '').split(',').filter(p => p.trim());
 const USER_AGENTS = [
@@ -36,6 +39,7 @@ function getDownloadOptions(extra = {}) {
     noPlaylist: true,
     retries: 3,
     socketTimeout: 30,
+    ffmpegLocation: ffmpegInstaller.path,
     addHeader: [
       'referer:https://www.youtube.com/',
       `user-agent:${getRandomUserAgent()}`,
@@ -106,65 +110,12 @@ function formatViews(count) {
   return `${count} views`;
 }
 
-async function getVideoFormats(url) {
+async function getVideoInfo(url) {
   const info = await youtubedl(url, getDownloadOptions({ dumpSingleJson: true }));
-  const formats = [];
-  const seenQualities = new Set();
-
-  if (info.formats) {
-    for (const format of info.formats) {
-      if (!format.url && !format.fragments) continue;
-      if (format.vcodec && format.vcodec !== 'none' && format.acodec && format.acodec !== 'none') {
-        const height = format.height || 0;
-        let quality = '';
-        if (height >= 1080) quality = '1080p';
-        else if (height >= 720) quality = '720p';
-        else if (height >= 480) quality = '480p';
-        else if (height >= 360) quality = '360p';
-        else if (height >= 240) quality = '240p';
-        else if (height > 0) quality = `${height}p`;
-
-        if (quality && !seenQualities.has(quality)) {
-          seenQualities.add(quality);
-          formats.push({
-            quality,
-            height,
-            size: format.filesize || format.filesize_approx || 0,
-            formatString: `best[height<=${height}][ext=mp4]/bestvideo[height<=${height}]+bestaudio/best[ext=mp4]/best`
-          });
-        }
-      }
-    }
-
-    if (formats.length === 0) {
-      for (const format of info.formats) {
-        if (!format.url && !format.fragments) continue;
-        if (format.vcodec && format.vcodec !== 'none') {
-          const height = format.height || 0;
-          let quality = '';
-          if (height >= 1080) quality = '1080p';
-          else if (height >= 720) quality = '720p';
-          else if (height >= 480) quality = '480p';
-          else if (height >= 360) quality = '360p';
-          else if (height >= 240) quality = '240p';
-          else if (height > 0) quality = `${height}p`;
-
-          if (quality && !seenQualities.has(quality)) {
-            seenQualities.add(quality);
-            formats.push({
-              quality,
-              height,
-              size: format.filesize || format.filesize_approx || 0,
-              formatString: `bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`
-            });
-          }
-        }
-      }
-    }
-  }
-
-  formats.sort((a, b) => b.height - a.height);
-  return { formats: formats.slice(0, 5), title: info.title, duration: info.duration };
+  return {
+    title: info.title || 'YouTube video',
+    duration: info.duration || 0
+  };
 }
 
 async function downloadVideoWithFormat(url, formatString, tempDir) {
@@ -183,7 +134,7 @@ async function downloadVideoWithFormat(url, formatString, tempDir) {
     const stats = await fs.stat(outputPath);
     if (stats.size > VIDEO_SIZE_LIMIT) {
       await fs.unlink(outputPath).catch(() => {});
-      throw new Error(`Video too large (${formatFileSize(stats.size)}). WhatsApp limit is 2GB.`);
+      throw new Error(`Video too large (${stats.size} bytes). WhatsApp limit is 2GB.`);
     }
 
     return { path: outputPath, size: stats.size };
@@ -193,6 +144,26 @@ async function downloadVideoWithFormat(url, formatString, tempDir) {
     }
     throw error;
   }
+}
+
+async function downloadVideoWithFallback(url, tempDir) {
+  const attempts = [
+    DEFAULT_PROGRESSIVE_VIDEO_FORMAT,
+    'b[ext=mp4]/b/best',
+    FALLBACK_MERGE_VIDEO_FORMAT
+  ];
+
+  let lastError = null;
+  for (const formatString of attempts) {
+    try {
+      const result = await downloadVideoWithFormat(url, formatString, tempDir);
+      return { ...result, formatString };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('Download failed');
 }
 
 async function downloadAudioWithYtDlp(url, tempDir) {
@@ -213,7 +184,7 @@ async function downloadAudioWithYtDlp(url, tempDir) {
     const stats = await fs.stat(outputPath);
     if (stats.size > AUDIO_SIZE_LIMIT) {
       await fs.unlink(outputPath).catch(() => {});
-      throw new Error(`Audio too large (${formatFileSize(stats.size)}). WhatsApp limit is 100MB.`);
+      throw new Error(`Audio too large (${stats.size} bytes). WhatsApp limit is 100MB.`);
     }
 
     return { path: outputPath, size: stats.size, title: info.title || 'audio' };
@@ -225,8 +196,8 @@ async function downloadAudioWithYtDlp(url, tempDir) {
   }
 }
 
-async function deliverYouTubeVideo(ctx, url, formatString, tempDir, title) {
-  const result = await downloadVideoWithFormat(url, formatString, tempDir);
+async function deliverYouTubeVideo(ctx, url, tempDir, title) {
+  const result = await downloadVideoWithFallback(url, tempDir);
   try {
     await sendVideoFile(ctx, result.path, {
       size: result.size,
@@ -242,14 +213,14 @@ async function deliverYouTubeVideo(ctx, url, formatString, tempDir, title) {
 
 export default {
   name: 'youtube',
-  description: 'YouTube video and audio downloader with quality selection',
-  version: '2.2.0',
+  description: 'YouTube video and audio downloader',
+  version: '2.4.0',
   author: 'MATDEV',
   commands: [
     {
       name: 'ytv',
       aliases: ['ytvideo', 'yt'],
-      description: 'Download YouTube video with quality selection',
+      description: 'Download YouTube video with lightweight hosted-friendly fallback',
       usage: '.ytv <url>',
       category: 'download',
       ownerOnly: false,
@@ -279,48 +250,9 @@ export default {
           if (shouldReact()) await ctx.react('⏳');
 
           try {
-            const { formats, title, duration } = await getVideoFormats(validatedUrl.url);
-
-            if (formats.length === 0) {
-              await deliverYouTubeVideo(ctx, validatedUrl.url, 'best[ext=mp4]/best', tempDir, title);
-              if (shouldReact()) await ctx.react('✅');
-              return;
-            }
-
-            const choices = formats.map((format, index) => ({
-              label: `${index + 1} - ${format.quality}${format.size ? ` (${formatFileSize(format.size)})` : ''}`,
-              formatString: format.formatString
-            }));
-
-            if (choices.length === 1) {
-              await deliverYouTubeVideo(ctx, validatedUrl.url, choices[0].formatString, tempDir, title);
-              if (shouldReact()) await ctx.react('✅');
-              return;
-            }
-
-            let prompt = `*${title}*\n`;
-            if (duration) prompt += `Duration: ${formatDuration(duration)}\n\n`;
-            prompt += 'Select video quality by replying with the number:\n';
-            prompt += choices.map(choice => choice.label).join('\n');
-
-            await promptNumericSelection(ctx, {
-              type: 'youtube_quality',
-              prompt,
-              choices,
-              data: { url: validatedUrl.url, tempDir, title },
-              handler: async (replyCtx, selected, choice, pending) => {
-                if (shouldReact()) await replyCtx.react('⏳');
-                try {
-                  await deliverYouTubeVideo(replyCtx, pending.data.url, selected.formatString, pending.data.tempDir, pending.data.title);
-                  if (shouldReact()) await replyCtx.react('✅');
-                } catch (error) {
-                  if (shouldReact()) await replyCtx.react('❌');
-                  const errorMsg = error.message?.includes('too large') ? error.message : 'Failed to download selected quality.';
-                  await replyCtx.reply(errorMsg);
-                }
-                return true;
-              }
-            });
+            const { title } = await getVideoInfo(validatedUrl.url);
+            await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title);
+            if (shouldReact()) await ctx.react('✅');
           } catch (error) {
             if (shouldReact()) await ctx.react('❌');
             let errorMsg = 'Download failed. ';
