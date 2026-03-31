@@ -14,7 +14,14 @@ const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
 const DEFAULT_PROGRESSIVE_VIDEO_FORMAT = '18/b[height<=360][ext=mp4]/b[ext=mp4]/b[height<=480]/best';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bv*[height<=480]+ba/b[height<=480]/best';
-const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE?.trim();
+
+function resolveCookiesFile() {
+  const raw = process.env.YTDLP_COOKIES_FILE?.trim();
+  if (!raw) return null;
+  return path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw);
+}
+
+const YTDLP_COOKIES_FILE = resolveCookiesFile();
 
 const PROXIES = (process.env.PROXIES || '').split(',').filter(p => p.trim());
 const USER_AGENTS = [
