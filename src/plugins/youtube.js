@@ -14,6 +14,7 @@ const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
 const DEFAULT_PROGRESSIVE_VIDEO_FORMAT = '18/b[height<=360][ext=mp4]/b[ext=mp4]/b[height<=480]/best';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bv*[height<=480]+ba/b[height<=480]/best';
+const YTDLP_COOKIES_FILE = process.env.YTDLP_COOKIES_FILE?.trim();
 
 const PROXIES = (process.env.PROXIES || '').split(',').filter(p => p.trim());
 const USER_AGENTS = [
@@ -48,6 +49,7 @@ function getDownloadOptions(extra = {}) {
     ...extra
   };
   if (proxy) options.proxy = proxy;
+  if (YTDLP_COOKIES_FILE) options.cookies = YTDLP_COOKIES_FILE;
   return options;
 }
 
@@ -290,6 +292,10 @@ export default {
               errorMsg += 'Video is private or unavailable.';
             } else if (error.message?.includes('age')) {
               errorMsg += 'Video is age-restricted.';
+            } else if (error.message?.includes('Sign in to confirm you’re not a bot') || error.message?.includes("Sign in to confirm you're not a bot")) {
+              errorMsg += YTDLP_COOKIES_FILE
+                ? 'YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
+                : 'YouTube blocked this host IP. Configure YTDLP_COOKIES_FILE with exported YouTube cookies.';
             } else if (error.message?.includes('too large')) {
               errorMsg += error.message;
             } else {
@@ -356,6 +362,14 @@ export default {
               stack: error?.stack || null
             });
             if (shouldReact()) await ctx.react('❌');
+            if (error.message?.includes('Sign in to confirm you’re not a bot') || error.message?.includes("Sign in to confirm you're not a bot")) {
+              await ctx.reply(
+                YTDLP_COOKIES_FILE
+                  ? 'Failed to download audio: YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
+                  : 'Failed to download audio: YouTube blocked this host IP. Configure YTDLP_COOKIES_FILE with exported YouTube cookies.'
+              );
+              return;
+            }
             await ctx.reply(`Failed to download audio: ${error.message}`);
           }
         } catch {
