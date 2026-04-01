@@ -40,14 +40,14 @@ async function sendPinterestImage(ctx, url) {
 export default {
   name: 'pinterest',
   description: 'Pinterest media downloader with quality selection',
-  version: '2.3.0',
+  version: '2.3.1',
   author: 'Are Martins',
   commands: [
     {
       name: 'pinterest',
       aliases: ['pinsrc', 'pint'],
       description: 'Download Pinterest media (image/video) with quality selection',
-      usage: '.pinterest <url>',
+      usage: '.pinterest <pin url>',
       category: 'download',
       ownerOnly: false,
       adminOnly: false,
@@ -64,12 +64,15 @@ export default {
           }
 
           if (!url) {
-            return await ctx.reply('Please provide a Pinterest URL\n\nUsage: .pinterest <url>');
+            return await ctx.reply('Please provide a Pinterest URL\n\nUsage: .pinterest <pin url>');
           }
 
           const validatedUrl = await validatePinterestUrl(url);
+          if (validatedUrl?.failedShortLink) {
+            return await ctx.reply('This Pinterest short link could not be resolved by Pinterest. Open it in your browser and copy the full pin URL, then send that instead.');
+          }
           if (!validatedUrl) {
-            return await ctx.reply('Please provide a valid Pinterest URL (pin.it or pinterest.com/pin/)');
+            return await ctx.reply('Please provide a valid Pinterest URL (pin.it or pinterest.com/pin/).');
           }
 
           await reactIfEnabled(ctx, '⏳');
@@ -84,20 +87,18 @@ export default {
                 return await ctx.reply('No downloadable video found (only streaming formats available).');
               }
 
-              const discoveredChoices = [];
+              const choices = [];
               for (let index = 0; index < videoQualities.length; index += 1) {
                 const quality = videoQualities[index];
                 const size = await getPinterestFileSize(quality.url);
                 let label = quality.quality;
                 if (quality.height > 0) label = `${quality.height}p`;
-                discoveredChoices.push({
+                choices.push({
                   label: `${index + 1} - ${label}${size ? ` (${formatFileSize(size)})` : ''}`,
                   url: quality.url,
                   height: quality.height || 0
                 });
               }
-
-              const choices = discoveredChoices;
 
               if (choices.length === 0) {
                 await reactIfEnabled(ctx, '❌');
@@ -175,18 +176,18 @@ export default {
               type: 'pinterest_quality',
               prompt,
               choices,
-               handler: async (replyCtx, selected, choice, pending) => {
-                 await reactIfEnabled(replyCtx, '⏳');
-                 try {
-                   await sendPinterestImage(replyCtx, selected.url);
-                   await reactIfEnabled(replyCtx, '✅');
-                   await reactPendingOrigin(replyCtx, pending, '✅');
-                 } catch {
-                   await reactIfEnabled(replyCtx, '❌');
-                   await reactPendingOrigin(replyCtx, pending, '❌');
-                   await replyCtx.reply('Failed to download selected quality.');
-                 }
-                 return true;
+              handler: async (replyCtx, selected, _choice, pending) => {
+                await reactIfEnabled(replyCtx, '⏳');
+                try {
+                  await sendPinterestImage(replyCtx, selected.url);
+                  await reactIfEnabled(replyCtx, '✅');
+                  await reactPendingOrigin(replyCtx, pending, '✅');
+                } catch {
+                  await reactIfEnabled(replyCtx, '❌');
+                  await reactPendingOrigin(replyCtx, pending, '❌');
+                  await replyCtx.reply('Failed to download selected quality.');
+                }
+                return true;
               }
             });
           } catch (error) {
@@ -211,4 +212,3 @@ export default {
     }
   ]
 };
-

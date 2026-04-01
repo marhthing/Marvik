@@ -7,7 +7,7 @@ const pluginLogger = logger.child({ component: 'autodownload' });
 const SUPPORTED_SERVICES = [
   {
     service: 'pinterest',
-    command: 'pin',
+    command: 'pinterest',
     pattern: /(?:https?:\/\/)?(?:www\.)?(?:pinterest\.com\/pin\/[^\s]+|pin\.it\/[^\s]+)/i
   },
   {

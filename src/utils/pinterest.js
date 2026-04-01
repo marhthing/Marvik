@@ -10,6 +10,25 @@ const HEADERS = {
   Connection: 'keep-alive'
 };
 
+async function resolvePinterestShortUrl(url) {
+  let cleanUrl = String(url || '').trim();
+  if (!cleanUrl) return { url: '', failed: false };
+  if (!cleanUrl.startsWith('http')) cleanUrl = `https://${cleanUrl}`;
+
+  if (!cleanUrl.includes('pin.it')) {
+    return { url: cleanUrl, failed: false };
+  }
+
+  const response = await axios.get(cleanUrl, {
+    headers: HEADERS,
+    maxRedirects: 5,
+    validateStatus: () => true
+  });
+  const finalUrl = response.request.res.responseUrl || cleanUrl;
+  const failed = /pinterest\.com\/\?show_error=true/i.test(finalUrl);
+  return { url: finalUrl, failed };
+}
+
 export async function getPinterestFileSize(url) {
   try {
     const head = await axios.head(url, {
@@ -28,15 +47,9 @@ export async function validatePinterestUrl(url) {
 
   let cleanUrl = url.trim();
   try {
-    if (cleanUrl.includes('pin.it')) {
-      if (!cleanUrl.startsWith('http')) cleanUrl = `https://${cleanUrl}`;
-      const response = await axios.get(cleanUrl, {
-        headers: HEADERS,
-        maxRedirects: 5,
-        validateStatus: () => true
-      });
-      cleanUrl = response.request.res.responseUrl || cleanUrl;
-    }
+    const resolved = await resolvePinterestShortUrl(cleanUrl);
+    if (resolved.failed) return { failedShortLink: true };
+    cleanUrl = resolved.url;
 
     const match = pinterestUrlRegex.exec(cleanUrl);
     if (!match) return null;
@@ -135,6 +148,7 @@ function findImageQualities(obj, depth = 0) {
   }
   return [];
 }
+
 
 export function extractPinterestUrlFromObject(obj) {
   const urlRegex = /https?:\/\/(?:www\.)?(?:pinterest\.com\/pin\/|pin\.it\/)[a-zA-Z0-9_-]+/i;
