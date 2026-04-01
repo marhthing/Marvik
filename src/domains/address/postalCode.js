@@ -14,6 +14,17 @@ function normalizePostalCode(value = '') {
   return String(value || '').trim().replace(/\s+/g, ' ');
 }
 
+function normalizePostalCodeForLookup(countryCode, postalCode) {
+  const normalizedCountry = normalizeCountryCode(countryCode);
+  const normalizedPostalCode = normalizePostalCode(postalCode);
+
+  if (normalizedCountry === 'GB') {
+    return normalizedPostalCode.toUpperCase();
+  }
+
+  return normalizedPostalCode;
+}
+
 export function parsePostalLookupInput(args = []) {
   const tokens = Array.isArray(args) ? args.map((item) => String(item || '').trim()).filter(Boolean) : [];
   if (tokens.length < 2) {
@@ -39,12 +50,51 @@ export function parsePostalLookupInput(args = []) {
   return { countryCode: '', postalCode: normalizePostalCode(tokens.join(' ')) };
 }
 
+async function lookupUnitedKingdomPostcode(postalCode) {
+  const url = `https://api.postcodes.io/postcodes/${encodeURIComponent(normalizePostalCodeForLookup('GB', postalCode))}`;
+  const response = await axios.get(url, {
+    timeout: 15000,
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    validateStatus: () => true
+  });
+
+  if (response.status === 404 || response.data?.status === 404 || !response.data?.result) {
+    return null;
+  }
+
+  if (response.status !== 200) {
+    throw new Error('Failed to fetch postal code details.');
+  }
+
+  const result = response.data.result;
+  const placeName = [result.parish, result.admin_ward].filter(Boolean).join(', ');
+
+  return {
+    postalCode: result.postcode || normalizePostalCode(postalCode),
+    country: result.country || 'United Kingdom',
+    countryCode: 'GB',
+    places: [
+      {
+        placeName: placeName || result.admin_district || '',
+        state: result.admin_district || '',
+        stateAbbreviation: result.region || '',
+        longitude: result.longitude != null ? String(result.longitude) : '',
+        latitude: result.latitude != null ? String(result.latitude) : ''
+      }
+    ]
+  };
+}
+
 export async function lookupPostalCode(countryCode, postalCode) {
   const normalizedCountry = normalizeCountryCode(countryCode);
-  const normalizedPostalCode = normalizePostalCode(postalCode);
+  const normalizedPostalCode = normalizePostalCodeForLookup(normalizedCountry, postalCode);
 
   if (!normalizedCountry || !normalizedPostalCode) {
     throw new Error('Please provide a country code and postal code.');
+  }
+
+  if (normalizedCountry === 'GB') {
+    return lookupUnitedKingdomPostcode(normalizedPostalCode);
   }
 
   const url = `https://api.zippopotam.us/${encodeURIComponent(normalizedCountry)}/${encodeURIComponent(normalizedPostalCode)}`;
