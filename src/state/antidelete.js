@@ -11,11 +11,13 @@ const STATUS_ANTIDELETE_DEFAULT = {
 };
 
 export function getAntideleteConfig() {
-  return getStorageSection('antidelete', ANTIDELETE_DEFAULT);
+  return normalizeDestinationConfig(getStorageSection('antidelete', ANTIDELETE_DEFAULT), ANTIDELETE_DEFAULT, { allowGroup: true });
 }
 
 export function setAntideleteConfig(newConfig) {
-  return patchStorageSection('antidelete', newConfig, ANTIDELETE_DEFAULT);
+  const current = getAntideleteConfig();
+  const next = normalizeDestinationConfig({ ...current, ...newConfig }, ANTIDELETE_DEFAULT, { allowGroup: true });
+  return patchStorageSection('antidelete', next, ANTIDELETE_DEFAULT);
 }
 
 export function getStatusAntideleteConfig() {

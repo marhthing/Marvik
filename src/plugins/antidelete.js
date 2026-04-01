@@ -78,7 +78,7 @@ function formatStatusAntideleteSummary() {
 }
 
 function resolveAntideleteDestination(ownerJid, conf, fallbackJid = ownerJid) {
-  return resolveDestinationJid({ chatId: fallbackJid }, conf, ownerJid || fallbackJid);
+  return resolveDestinationJid({ chatId: fallbackJid }, conf, ownerJid || fallbackJid, { allowGroup: true });
 }
 
 function extractMessageBody(msg) {
