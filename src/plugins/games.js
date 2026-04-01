@@ -41,6 +41,39 @@ function normalizeId(id) {
   return id.split('@')[0].split(':')[0].replace(/\D/g, '');
 }
 
+function normalizeRiddleAnswerValue(value) {
+  const normalized = String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(a|an|the)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return normalized
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => {
+      if (word.length > 3 && word.endsWith('s') && !word.endsWith('ss')) {
+        return word.slice(0, -1);
+      }
+      return word;
+    })
+    .join(' ');
+}
+
+function isMatchingRiddleAnswer(guess, answer) {
+  const normalizedGuess = normalizeRiddleAnswerValue(guess);
+  const normalizedAnswer = normalizeRiddleAnswerValue(answer);
+
+  if (!normalizedGuess || !normalizedAnswer) return false;
+  if (normalizedGuess === normalizedAnswer) return true;
+
+  const guessWords = normalizedGuess.split(' ');
+  const answerWords = normalizedAnswer.split(' ');
+
+  return guessWords.join(' ') === answerWords.join(' ');
+}
+
 function isStopCommand(text) {
   const normalized = String(text || '').trim().toUpperCase();
   return normalized === 'STOP' || normalized === 'EXIT' || normalized === 'QUIT';
@@ -423,7 +456,7 @@ async function startRiddleGame(ctx, game) {
       if (isStopCommand(guess)) { if (canStopGame(replyCtx, g, replyCtx.senderId, guess)) { activeGames.delete(ctx.chatId); await replyCtx.reply('Game stopped.'); return true; } return false; }
       if (guess === 'hint') { await replyCtx.reply(`💡 Hint: ${g.currentRiddle.hint}`); return false; }
 
-      if (guess === g.currentRiddle.answer.toLowerCase()) {
+      if (isMatchingRiddleAnswer(guess, g.currentRiddle.answer)) {
         activeGames.delete(ctx.chatId);
         await replyCtx.reply(`🎉 Correct! @${normalizeId(replyCtx.senderId)} solved it! The answer was *${g.currentRiddle.answer}*`, { mentions: [replyCtx.senderId] });
         return true;

@@ -1,45 +1,6 @@
-import { getStorageSection, setStorageSection } from '../utils/storageStore.js';
-import { normalizeDirectJid } from '../utils/destinationRouter.js';
+import { deleteAfkEntry, getAfkEntry, normalizeAfkJid, setAfkEntry } from '../state/afk.js';
 import { getOwnerJid } from '../utils/messageUtils.js';
-
-const DEFAULTS = { users: {} };
-
-function getAfkState() {
-  const state = getStorageSection('afk', DEFAULTS);
-  return {
-    users: state.users && typeof state.users === 'object' ? state.users : {}
-  };
-}
-
-function saveAfkState(state) {
-  setStorageSection('afk', state);
-}
-
-function normalizeAfkJid(jid) {
-  return normalizeDirectJid(jid) || String(jid || '').trim().toLowerCase() || null;
-}
-
-function getEntry(jid) {
-  const key = normalizeAfkJid(jid);
-  if (!key) return null;
-  return getAfkState().users[key] || null;
-}
-
-function setEntry(jid, entry) {
-  const key = normalizeAfkJid(jid);
-  if (!key) return;
-  const state = getAfkState();
-  state.users[key] = entry;
-  saveAfkState(state);
-}
-
-function deleteEntry(jid) {
-  const key = normalizeAfkJid(jid);
-  if (!key) return;
-  const state = getAfkState();
-  delete state.users[key];
-  saveAfkState(state);
-}
+import { buildMentionEntry } from '../utils/mentions.js';
 
 function formatDuration(since) {
   const elapsed = Math.max(0, Date.now() - since);
@@ -70,7 +31,7 @@ export default {
       async execute(ctx) {
         const mode = ctx.args[0]?.toLowerCase();
         if (mode === 'status') {
-          const entry = getEntry(ctx.senderId);
+          const entry = getAfkEntry(ctx.senderId);
           if (!entry) {
             await ctx.reply('You are not marked as AFK.');
             return;
@@ -80,18 +41,18 @@ export default {
         }
 
         if (mode === 'off' || mode === 'back') {
-          const entry = getEntry(ctx.senderId);
+          const entry = getAfkEntry(ctx.senderId);
           if (!entry) {
             await ctx.reply('You are not AFK right now.');
             return;
           }
-          deleteEntry(ctx.senderId);
+          deleteAfkEntry(ctx.senderId);
           await ctx.reply(`Welcome back. AFK cleared after ${formatDuration(entry.since)}.`);
           return;
         }
 
         const reason = ctx.args.join(' ').trim();
-        setEntry(ctx.senderId, {
+        setAfkEntry(ctx.senderId, {
           reason,
           since: Date.now(),
           by: ctx.senderName || ctx.senderId
@@ -110,12 +71,12 @@ export default {
       groupOnly: false,
       cooldown: 2,
       async execute(ctx) {
-        const entry = getEntry(ctx.senderId);
+        const entry = getAfkEntry(ctx.senderId);
         if (!entry) {
           await ctx.reply('You are not AFK right now.');
           return;
         }
-        deleteEntry(ctx.senderId);
+        deleteAfkEntry(ctx.senderId);
         await ctx.reply(`Welcome back. AFK cleared after ${formatDuration(entry.since)}.`);
       }
     }
@@ -123,7 +84,7 @@ export default {
   async onMessage(ctx) {
     if (ctx.command === 'afk' || ctx.command === 'back') return;
 
-    const selfEntry = getEntry(ctx.senderId);
+    const selfEntry = getAfkEntry(ctx.senderId);
     const hasActivity = Boolean(
       ctx.text?.trim() ||
       ctx.media ||
@@ -133,7 +94,7 @@ export default {
     );
 
     if (selfEntry && hasActivity) {
-      deleteEntry(ctx.senderId);
+      deleteAfkEntry(ctx.senderId);
       const ownerJid = getOwnerJid(ctx);
       if (ownerJid && ctx.platformAdapter?.sendMessage) {
         await ctx.platformAdapter.sendMessage(
@@ -146,10 +107,13 @@ export default {
 
     if (!ctx.isGroup && !ctx.isOwner) {
       const ownerJid = getOwnerJid(ctx);
-      const ownerEntry = ownerJid ? getEntry(ownerJid) : null;
+      const ownerEntry = ownerJid ? getAfkEntry(ownerJid) : null;
       if (ownerEntry) {
-        const label = ownerEntry.by || ownerJid?.split('@')[0] || 'Owner';
-        await ctx.reply(`${label} is AFK${ownerEntry.reason ? `: ${ownerEntry.reason}` : ''} (${formatDuration(ownerEntry.since)})`);
+        const mention = buildMentionEntry(ownerJid);
+        await ctx.reply(
+          `${mention?.handle || ownerEntry.by || 'Owner'} is AFK${ownerEntry.reason ? `: ${ownerEntry.reason}` : ''} (${formatDuration(ownerEntry.since)})`,
+          mention ? { mentions: [mention.jid] } : {}
+        );
         return;
       }
     }
@@ -158,23 +122,25 @@ export default {
 
     const quotedSenderId = normalizeAfkJid(ctx.quoted?.senderId);
     if (quotedSenderId) {
-      const quotedEntry = getEntry(quotedSenderId);
+      const quotedEntry = getAfkEntry(quotedSenderId);
       if (quotedEntry) notify.set(ctx.quoted.senderId, quotedEntry);
     }
 
     for (const mention of ctx.mentions || []) {
       const normalizedMention = normalizeAfkJid(mention);
-      const entry = getEntry(normalizedMention);
+      const entry = getAfkEntry(normalizedMention);
       if (entry) notify.set(mention, entry);
     }
 
     if (!notify.size) return;
 
+    const mentions = [];
     const lines = Array.from(notify.entries()).map(([jid, entry]) => {
-      const label = entry.by || jid.split('@')[0];
-      return `${label} is AFK${entry.reason ? `: ${entry.reason}` : ''} (${formatDuration(entry.since)})`;
+      const mention = buildMentionEntry(jid);
+      if (mention) mentions.push(mention.jid);
+      return `${mention?.handle || entry.by || 'User'} is AFK${entry.reason ? `: ${entry.reason}` : ''} (${formatDuration(entry.since)})`;
     });
 
-    await ctx.reply(lines.join('\n'));
+    await ctx.reply(lines.join('\n'), mentions.length ? { mentions } : {});
   }
 };

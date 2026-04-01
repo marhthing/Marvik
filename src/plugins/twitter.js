@@ -1,8 +1,17 @@
 import { TwitterDL } from 'twitter-downloader';
 import axios from 'axios';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendImageBuffer, sendVideoBuffer } from '../utils/downloadFlow.js';
+import {
+  attemptChoiceWithFallback,
+  formatFileSize,
+  promptNumericSelection,
+  reactPendingOrigin,
+  sendImageBuffer,
+  sendVideoBuffer,
+  validateVideoBuffer,
+  withDelayedNotice
+} from '../utils/downloadFlow.js';
 
 const VIDEO_SIZE_LIMIT = 100 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
@@ -17,16 +26,21 @@ const HEADERS = {
 function validateTwitterUrl(url) {
   const twitterUrlRegex = /(?:https?:\/\/)?(?:www\.)?(?:twitter\.com|x\.com)\/(?:\w+)\/status\/(\d+)/;
   if (!url || typeof url !== 'string') return null;
+
   const cleanUrl = url.trim();
   const match = twitterUrlRegex.exec(cleanUrl);
   if (!match) return null;
-  const normalizedUrl = (cleanUrl.startsWith('http') ? cleanUrl : `https://${cleanUrl}`).replace('x.com', 'twitter.com');
-  return { url: normalizedUrl, tweetId: match[1] };
+
+  return {
+    url: (cleanUrl.startsWith('http') ? cleanUrl : `https://${cleanUrl}`).replace('x.com', 'twitter.com'),
+    tweetId: match[1]
+  };
 }
 
 function extractTwitterUrlFromObject(obj) {
   const twitterUrlRegex = /https?:\/\/(?:www\.)?(?:twitter\.com|x\.com)\/\w+\/status\/\d+/i;
   if (!obj || typeof obj !== 'object') return null;
+
   for (const key in obj) {
     if (typeof obj[key] === 'string') {
       const match = obj[key].match(twitterUrlRegex);
@@ -59,6 +73,7 @@ async function downloadMediaToBuffer(mediaUrl) {
 
 async function sendTwitterVideo(ctx, url) {
   const buffer = await downloadMediaToBuffer(url);
+  await validateVideoBuffer(buffer);
   await sendVideoBuffer(ctx, buffer, {
     sizeLimit: VIDEO_SIZE_LIMIT,
     mediaLimit: VIDEO_MEDIA_LIMIT,
@@ -75,8 +90,8 @@ async function sendTwitterImage(ctx, url) {
 export default {
   name: 'twitter',
   description: 'Twitter/X video and image downloader with quality selection',
-  version: '1.1.0',
-  author: 'MATDEV',
+  version: '1.2.0',
+  author: 'Are Martins',
   commands: [
     {
       name: 'twitter',
@@ -107,43 +122,43 @@ export default {
             return await ctx.reply('Please provide a valid Twitter/X URL');
           }
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           try {
-            const result = await TwitterDL(validatedUrl.url);
+            const result = await withDelayedNotice(ctx, () => TwitterDL(validatedUrl.url));
             if (!result || result.status !== 'success' || !result.result) {
-              if (shouldReact()) await ctx.react('❌');
+              await reactIfEnabled(ctx, '❌');
               return await ctx.reply('Could not fetch media. The tweet may be private or unavailable.');
             }
 
             const data = result.result;
             const media = data.media || [];
             if (media.length === 0) {
-              if (shouldReact()) await ctx.react('❌');
+              await reactIfEnabled(ctx, '❌');
               return await ctx.reply('No media found in this tweet.');
             }
 
-            const videos = media.filter(item => item.type === 'video' || item.type === 'gif');
-            const images = media.filter(item => item.type === 'photo');
+            const videos = media.filter((item) => item.type === 'video' || item.type === 'gif');
+            const images = media.filter((item) => item.type === 'photo');
 
             if (videos.length > 0) {
-              const variants = (videos[0].videos || []).filter(variant => variant.url);
+              const variants = (videos[0].videos || []).filter((variant) => variant.url);
               if (variants.length === 0) {
-                if (shouldReact()) await ctx.react('❌');
+                await reactIfEnabled(ctx, '❌');
                 return await ctx.reply('No downloadable video found.');
               }
 
               const sortedVariants = variants
-                .filter(variant => variant.bitrate !== undefined)
+                .filter((variant) => variant.bitrate !== undefined)
                 .sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
 
               if (sortedVariants.length === 0) {
                 await sendTwitterVideo(ctx, variants[0].url);
-                if (shouldReact()) await ctx.react('✅');
+                await reactIfEnabled(ctx, '✅');
                 return;
               }
 
-              const choices = [];
+              const discoveredChoices = [];
               for (let index = 0; index < sortedVariants.length; index += 1) {
                 const variant = sortedVariants[index];
                 const size = await getFileSize(variant.url);
@@ -153,15 +168,24 @@ export default {
                 else if ((variant.bitrate || 0) >= 500000) qualityLabel = '480p';
                 else if ((variant.bitrate || 0) >= 200000) qualityLabel = '360p';
                 else qualityLabel = 'Low';
-                choices.push({
+
+                discoveredChoices.push({
                   label: `${index + 1} - ${qualityLabel}${size ? ` (${formatFileSize(size)})` : ''}`,
-                  url: variant.url
+                  url: variant.url,
+                  bitrate: variant.bitrate || 0
                 });
+              }
+
+              const choices = discoveredChoices;
+
+              if (choices.length === 0) {
+                await reactIfEnabled(ctx, '❌');
+                return await ctx.reply('No working downloadable video quality was found.');
               }
 
               if (choices.length === 1) {
                 await sendTwitterVideo(ctx, choices[0].url);
-                if (shouldReact()) await ctx.react('✅');
+                await reactIfEnabled(ctx, '✅');
                 return;
               }
 
@@ -170,22 +194,30 @@ export default {
                 prompt += `*${data.description.substring(0, 100)}${data.description.length > 100 ? '...' : ''}*\n\n`;
               }
               prompt += 'Select video quality by replying with the number:\n';
-              prompt += choices.map(choice => choice.label).join('\n');
+              prompt += choices.map((choice) => choice.label).join('\n');
 
               await promptNumericSelection(ctx, {
                 type: 'twitter_quality',
                 prompt,
                 choices,
-                handler: async (replyCtx, selected) => {
-                  if (shouldReact()) await replyCtx.react('⏳');
+                handler: async (replyCtx, selected, choice, pending) => {
+                  await reactIfEnabled(replyCtx, '⏳');
                   try {
-                    await sendTwitterVideo(replyCtx, selected.url);
-                    if (shouldReact()) await replyCtx.react('✅');
+                    await attemptChoiceWithFallback({
+                      choices: pending.data.choices,
+                      selectedIndex: choice - 1,
+                      attempt: async (fallbackChoice) => {
+                        await sendTwitterVideo(replyCtx, fallbackChoice.url);
+                      }
+                    });
+                    await reactIfEnabled(replyCtx, '✅');
+                    await reactPendingOrigin(replyCtx, pending, '✅');
                   } catch (error) {
-                    if (shouldReact()) await replyCtx.react('❌');
-                    const message = error.message?.includes('Video too large')
+                    await reactIfEnabled(replyCtx, '❌');
+                    await reactPendingOrigin(replyCtx, pending, '❌');
+                    const message = error.message?.includes('Video too large') || error.message?.includes('All quality options failed')
                       ? error.message
-                      : 'Failed to download selected quality.';
+                      : 'Failed to download all available qualities.';
                     await replyCtx.reply(message);
                   }
                   return true;
@@ -197,7 +229,7 @@ export default {
             if (images.length > 0) {
               if (images.length === 1) {
                 await sendTwitterImage(ctx, images[0].url);
-                if (shouldReact()) await ctx.react('✅');
+                await reactIfEnabled(ctx, '✅');
                 return;
               }
 
@@ -211,26 +243,28 @@ export default {
               });
 
               let prompt = `Found ${images.length} images. Select option:\n`;
-              prompt += choices.map(choice => choice.label).join('\n');
+              prompt += choices.map((choice) => choice.label).join('\n');
 
               await promptNumericSelection(ctx, {
                 type: 'twitter_images',
                 prompt,
                 choices,
-                handler: async (replyCtx, selected) => {
-                  if (shouldReact()) await replyCtx.react('⏳');
+                handler: async (replyCtx, selected, choice, pending) => {
+                  await reactIfEnabled(replyCtx, '⏳');
                   try {
                     if (selected.downloadAll) {
                       for (const image of images) {
                         await sendTwitterImage(replyCtx, image.url);
-                        await new Promise(resolve => setTimeout(resolve, 1000));
+                        await new Promise((resolve) => setTimeout(resolve, 1000));
                       }
                     } else {
                       await sendTwitterImage(replyCtx, selected.url);
                     }
-                    if (shouldReact()) await replyCtx.react('✅');
+                    await reactIfEnabled(replyCtx, '✅');
+                    await reactPendingOrigin(replyCtx, pending, '✅');
                   } catch {
-                    if (shouldReact()) await replyCtx.react('❌');
+                    await reactIfEnabled(replyCtx, '❌');
+                    await reactPendingOrigin(replyCtx, pending, '❌');
                     await replyCtx.reply('Failed to download selected media.');
                   }
                   return true;
@@ -239,10 +273,10 @@ export default {
               return;
             }
 
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             await ctx.reply('No downloadable media found in this tweet.');
           } catch (error) {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             let errorMsg = 'Download failed. ';
             if (error.message?.includes('private')) {
               errorMsg += 'This tweet may be private.';
@@ -254,10 +288,11 @@ export default {
             await ctx.reply(errorMsg);
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while processing Twitter media');
         }
       }
     }
   ]
 };
+

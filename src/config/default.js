@@ -7,21 +7,24 @@ dotenv.config({ override: true });
 // Auto-fill missing .env variables with defaults (template)
 const envPath = path.resolve(process.cwd(), '.env');
 const requiredVars = {
-  BOT_NAME: 'MATDEV',
+  BOT_NAME: 'Marvik',
   PREFIX: '.',
   OWNER_NUMBER: '',
+  BOT_LANG: 'en',
   ENABLE_WHATSAPP: 'true',
   LOG_LEVEL: 'info',
+  LOG_PRETTY: 'true',
+  LOG_TIMESTAMPS: 'true',
   MAX_COMMAND_COOLDOWN: '3000',
-  STICKER_PACK: 'MATDEV Bot',
-  STICKER_AUTHOR: 'Bot',
-  WEBAPP_URL: 'http://localhost:3001/webapp',
+  STICKER_PACK: 'Marvik',
+  STICKER_AUTHOR: 'Are Martins',
   // Auto features defaults
   AUTO_TYPING: 'false',
   ALWAYS_ONLINE: 'false',
   AUTO_READ: 'false',
   AUTO_REACT: 'false',
   AUTO_STATUS_REACT: 'false',
+  AUTO_RESTART_HOURS: '0',
 };
 // Ensure .env exists and is populated with all required variables
 let envContent = '';
@@ -49,11 +52,12 @@ dotenv.config({ override: true });
 
 export default {
   // Bot settings
-  botName: process.env.BOT_NAME || 'MATDEV',
+  botName: process.env.BOT_NAME || 'Marvik',
   prefix: process.env.PREFIX || '.',
 
   // Owner settings
   ownerNumber: process.env.OWNER_NUMBER || '',
+  botLang: process.env.BOT_LANG || 'en',
 
   // Platform toggles
   platforms: {
@@ -61,8 +65,8 @@ export default {
   },
 
   // Sticker defaults
-  stickerPack: process.env.STICKER_PACK || 'MATDEV Bot',
-  stickerAuthor: process.env.STICKER_AUTHOR || 'Bot',
+  stickerPack: process.env.STICKER_PACK || 'Marvik',
+  stickerAuthor: process.env.STICKER_AUTHOR || 'Are Martins',
 
   // Rate limiting
   rateLimiting: {
@@ -73,8 +77,13 @@ export default {
 
   // Logging
   logging: {
-    level: process.env.LOG_LEVEL || 'info'
+    level: process.env.LOG_LEVEL || 'info',
+    pretty: (typeof process.env.LOG_PRETTY !== 'undefined' ? process.env.LOG_PRETTY : requiredVars.LOG_PRETTY) === 'true',
+    timestamps: (typeof process.env.LOG_TIMESTAMPS !== 'undefined' ? process.env.LOG_TIMESTAMPS : requiredVars.LOG_TIMESTAMPS) === 'true'
   },
+
+  // Maintenance
+  autoRestartHours: Math.max(0, Number(process.env.AUTO_RESTART_HOURS || '0') || 0),
 
   // Paths
   paths: {
@@ -82,8 +91,5 @@ export default {
     storage: './storage',
     tmp: './tmp',
     plugins: './src/plugins'
-  },
-
-  // Webapp URL
-  webappUrl: process.env.WEBAPP_URL || 'http://localhost:3001/webapp'
+  }
 };

@@ -2,7 +2,7 @@ export default {
   name: 'gif',
   description: 'Send a random GIF or search for GIFs',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'gif',
@@ -66,3 +66,4 @@ export default {
     }
   ]
 };
+

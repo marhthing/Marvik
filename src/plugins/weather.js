@@ -7,7 +7,7 @@ export default {
   name: 'weather',
   description: 'Get weather for a city',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'weather',
@@ -37,3 +37,4 @@ export default {
     }
   ]
 };
+

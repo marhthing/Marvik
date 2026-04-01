@@ -1,6 +1,15 @@
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendImageBuffer, sendVideoBuffer } from '../utils/downloadFlow.js';
+import {
+  attemptChoiceWithFallback,
+  formatFileSize,
+  promptNumericSelection,
+  reactPendingOrigin,
+  sendImageBuffer,
+  sendVideoBuffer,
+  validateVideoBuffer,
+  withDelayedNotice
+} from '../utils/downloadFlow.js';
 import {
   downloadPinterestMediaToBuffer,
   extractPinterestUrlFromObject,
@@ -14,6 +23,7 @@ const VIDEO_MEDIA_LIMIT = 16 * 1024 * 1024;
 
 async function sendPinterestVideo(ctx, url) {
   const buffer = await downloadPinterestMediaToBuffer(url);
+  await validateVideoBuffer(buffer);
   await sendVideoBuffer(ctx, buffer, {
     sizeLimit: VIDEO_SIZE_LIMIT,
     mediaLimit: VIDEO_MEDIA_LIMIT,
@@ -30,14 +40,14 @@ async function sendPinterestImage(ctx, url) {
 export default {
   name: 'pinterest',
   description: 'Pinterest media downloader with quality selection',
-  version: '2.2.0',
-  author: 'MATDEV',
+  version: '2.3.0',
+  author: 'Are Martins',
   commands: [
     {
-      name: 'pin',
-      aliases: ['pinterest'],
+      name: 'pinterest',
+      aliases: ['pinsrc', 'pint'],
       description: 'Download Pinterest media (image/video) with quality selection',
-      usage: '.pin <url>',
+      usage: '.pinterest <url>',
       category: 'download',
       ownerOnly: false,
       adminOnly: false,
@@ -54,7 +64,7 @@ export default {
           }
 
           if (!url) {
-            return await ctx.reply('Please provide a Pinterest URL\n\nUsage: .pin <url>');
+            return await ctx.reply('Please provide a Pinterest URL\n\nUsage: .pinterest <url>');
           }
 
           const validatedUrl = await validatePinterestUrl(url);
@@ -62,53 +72,69 @@ export default {
             return await ctx.reply('Please provide a valid Pinterest URL (pin.it or pinterest.com/pin/)');
           }
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           try {
-            const mediaInfo = await getPinterestMediaInfo(validatedUrl.url);
+            const mediaInfo = await withDelayedNotice(ctx, () => getPinterestMediaInfo(validatedUrl.url));
 
             if (mediaInfo.isVideo) {
-              const videoQualities = mediaInfo.videoQualities.filter(item => !item.url.includes('.m3u8'));
+              const videoQualities = mediaInfo.videoQualities.filter((item) => !item.url.includes('.m3u8'));
               if (videoQualities.length === 0) {
-                if (shouldReact()) await ctx.react('❌');
+                await reactIfEnabled(ctx, '❌');
                 return await ctx.reply('No downloadable video found (only streaming formats available).');
               }
 
-              if (videoQualities.length === 1) {
-                await sendPinterestVideo(ctx, videoQualities[0].url);
-                if (shouldReact()) await ctx.react('✅');
-                return;
-              }
-
-              const choices = [];
+              const discoveredChoices = [];
               for (let index = 0; index < videoQualities.length; index += 1) {
                 const quality = videoQualities[index];
                 const size = await getPinterestFileSize(quality.url);
                 let label = quality.quality;
                 if (quality.height > 0) label = `${quality.height}p`;
-                choices.push({
+                discoveredChoices.push({
                   label: `${index + 1} - ${label}${size ? ` (${formatFileSize(size)})` : ''}`,
-                  url: quality.url
+                  url: quality.url,
+                  height: quality.height || 0
                 });
               }
 
+              const choices = discoveredChoices;
+
+              if (choices.length === 0) {
+                await reactIfEnabled(ctx, '❌');
+                return await ctx.reply('No working downloadable video quality was found.');
+              }
+
+              if (choices.length === 1) {
+                await sendPinterestVideo(ctx, choices[0].url);
+                await reactIfEnabled(ctx, '✅');
+                return;
+              }
+
               let prompt = '*Pinterest Video Found!*\n\nSelect quality by replying with the number:\n';
-              prompt += choices.map(choice => choice.label).join('\n');
+              prompt += choices.map((choice) => choice.label).join('\n');
 
               await promptNumericSelection(ctx, {
                 type: 'pinterest_quality',
                 prompt,
                 choices,
-                handler: async (replyCtx, selected) => {
-                  if (shouldReact()) await replyCtx.react('⏳');
+                handler: async (replyCtx, selected, choice, pending) => {
+                  await reactIfEnabled(replyCtx, '⏳');
                   try {
-                    await sendPinterestVideo(replyCtx, selected.url);
-                    if (shouldReact()) await replyCtx.react('✅');
+                    await withDelayedNotice(replyCtx, () => attemptChoiceWithFallback({
+                      choices: pending.data.choices,
+                      selectedIndex: choice - 1,
+                      attempt: async (fallbackChoice) => {
+                        await sendPinterestVideo(replyCtx, fallbackChoice.url);
+                      }
+                    }));
+                    await reactIfEnabled(replyCtx, '✅');
+                    await reactPendingOrigin(replyCtx, pending, '✅');
                   } catch (error) {
-                    if (shouldReact()) await replyCtx.react('❌');
-                    const message = error.message?.includes('Video too large')
+                    await reactIfEnabled(replyCtx, '❌');
+                    await reactPendingOrigin(replyCtx, pending, '❌');
+                    const message = error.message?.includes('Video too large') || error.message?.includes('All quality options failed')
                       ? error.message
-                      : 'Failed to download selected quality.';
+                      : 'Failed to download all available qualities.';
                     await replyCtx.reply(message);
                   }
                   return true;
@@ -119,13 +145,13 @@ export default {
 
             const imageQualities = mediaInfo.imageQualities;
             if (imageQualities.length === 0) {
-              if (shouldReact()) await ctx.react('❌');
+              await reactIfEnabled(ctx, '❌');
               return await ctx.reply('No downloadable image found.');
             }
 
             if (imageQualities.length === 1) {
               await sendPinterestImage(ctx, imageQualities[0].url);
-              if (shouldReact()) await ctx.react('✅');
+              await reactIfEnabled(ctx, '✅');
               return;
             }
 
@@ -143,26 +169,28 @@ export default {
             }
 
             let prompt = '*Pinterest Image Found!*\n\nSelect quality by replying with the number:\n';
-            prompt += choices.map(choice => choice.label).join('\n');
+            prompt += choices.map((choice) => choice.label).join('\n');
 
             await promptNumericSelection(ctx, {
               type: 'pinterest_quality',
               prompt,
               choices,
-              handler: async (replyCtx, selected) => {
-                if (shouldReact()) await replyCtx.react('⏳');
-                try {
-                  await sendPinterestImage(replyCtx, selected.url);
-                  if (shouldReact()) await replyCtx.react('✅');
-                } catch {
-                  if (shouldReact()) await replyCtx.react('❌');
-                  await replyCtx.reply('Failed to download selected quality.');
-                }
-                return true;
+               handler: async (replyCtx, selected, choice, pending) => {
+                 await reactIfEnabled(replyCtx, '⏳');
+                 try {
+                   await sendPinterestImage(replyCtx, selected.url);
+                   await reactIfEnabled(replyCtx, '✅');
+                   await reactPendingOrigin(replyCtx, pending, '✅');
+                 } catch {
+                   await reactIfEnabled(replyCtx, '❌');
+                   await reactPendingOrigin(replyCtx, pending, '❌');
+                   await replyCtx.reply('Failed to download selected quality.');
+                 }
+                 return true;
               }
             });
           } catch (error) {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             let errorMsg = 'Download failed. ';
             if (error.message?.includes('private')) {
               errorMsg += 'This pin may be private.';
@@ -176,10 +204,11 @@ export default {
             await ctx.reply(errorMsg);
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while processing the Pinterest media');
         }
       }
     }
   ]
 };
+

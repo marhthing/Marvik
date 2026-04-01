@@ -1,14 +1,17 @@
 // pm2style.js - Plugin for .shutdown, .update, .restart commands (PM2 style)
 import { writeFileSync } from 'fs';
 import { execSync } from 'child_process';
+import logger from '../utils/logger.js';
+import { recordLifecycleEvent, setPendingLifecycleAction } from '../state/lifecycle.js';
 
 const cwd = process.cwd();
+const pluginLogger = logger.child({ component: 'core' });
 
 export default {
   name: 'core',
   description: 'Bot process management commands: .shutdown, .update, .restart',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'shutdown',
@@ -22,8 +25,16 @@ export default {
       cooldown: 0,
       async execute(ctx) {
         await ctx.reply('🛑 Shutting down...');
-        console.log('Shutdown command received, exiting process.');
-        setTimeout(() => process.exit(0), 500);
+        pluginLogger.info('Shutdown command received');
+        recordLifecycleEvent('shutdown_requested', {
+          chatId: ctx.chatId,
+          senderId: ctx.senderId || null,
+          senderName: ctx.senderName || null
+        });
+        if (ctx.bot && typeof ctx.bot.stop === 'function') {
+          await ctx.bot.stop();
+        }
+        process.exit(0);
       }
     },
     {
@@ -38,7 +49,19 @@ export default {
       cooldown: 0,
       async execute(ctx) {
         await ctx.reply('♻️ Restarting...');
-        console.log('Restart command received, exiting process to trigger manager restart.');
+        pluginLogger.info('Restart command received');
+        setPendingLifecycleAction({
+          type: 'restart',
+          chatId: ctx.chatId,
+          senderId: ctx.senderId || null,
+          senderName: ctx.senderName || null,
+          messageKey: ctx.messageKey || ctx.raw?.key || null
+        });
+        recordLifecycleEvent('restart_requested', {
+          chatId: ctx.chatId,
+          senderId: ctx.senderId || null,
+          senderName: ctx.senderName || null
+        });
         if (ctx.bot && typeof ctx.bot.restart === 'function') {
            await ctx.bot.restart();
         } else {
@@ -158,12 +181,15 @@ export default {
             }
             // Debug: List root directory contents before restart
             const afterUpdate = fs.readdirSync(cwd);
-            console.log('Root directory after update:', afterUpdate);
+            pluginLogger.debug({ entries: afterUpdate }, 'Root directory after update');
             if (!fs.existsSync(path.join(cwd, 'src', 'index.js'))) {
-              console.error('src/index.js is missing after update!');
+              pluginLogger.error('src/index.js is missing after update');
             }
             try {
-              console.log('Update complete, exiting to allow manager to handle fresh start.');
+              pluginLogger.info('Update complete, exiting for fresh start');
+              if (ctx.bot && typeof ctx.bot.stop === 'function') {
+                await ctx.bot.stop();
+              }
               process.exit(0);
             } catch (e) {
               await ctx.reply('❌ Error exiting process: ' + e.message);
@@ -240,15 +266,24 @@ export default {
         }
         // Start the root index.js in the foreground (interactive)
         execSync('node index.js', { stdio: 'inherit' });
+        if (ctx.bot && typeof ctx.bot.stop === 'function') {
+          await ctx.bot.stop();
+        }
         process.exit(0);
       }
     }
   ],
   async onLoad(bot) {
-    const RESTART_INTERVAL = 6 * 60 * 60 * 1000; // 6 hours
-    console.log(`[Core] Auto-restart scheduled every 6 hours.`);
+    const restartHours = Math.max(0, Number(bot?.config?.autoRestartHours || 0) || 0);
+    if (restartHours <= 0) {
+      pluginLogger.debug('Auto-restart is disabled');
+      return undefined;
+    }
+
+    const RESTART_INTERVAL = restartHours * 60 * 60 * 1000;
+    pluginLogger.info({ restartHours }, 'Auto-restart scheduled');
     const restartTimer = setInterval(async () => {
-      console.log('[Core] Auto-restart triggered.');
+      pluginLogger.info('Auto-restart triggered');
       if (bot && typeof bot.restart === 'function') {
         await bot.restart();
       } else {
@@ -259,3 +294,4 @@ export default {
     return () => clearInterval(restartTimer);
   }
 };
+

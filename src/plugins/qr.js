@@ -1,13 +1,13 @@
 import QRCode from 'qrcode';
 import fs from 'fs-extra';
 import path from 'path';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 
 export default {
   name: 'qrcode',
   description: 'QR Code Generator',
   version: '1.1.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
 
   commands: [
     {
@@ -28,7 +28,7 @@ export default {
           
           const text = ctx.args.join(' ');
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           // Generate QR code as buffer in memory (no file save)
           const qrBuffer = await QRCode.toBuffer(text, {
@@ -43,14 +43,15 @@ export default {
             caption: `QR Code for: ${text.length > 100 ? text.substring(0, 100) + '...' : text}`
           });
 
-          if (shouldReact()) await ctx.react('✅');
+          await reactIfEnabled(ctx, '✅');
           
         } catch (error) {
           // console.error('QR Error:', error);
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('Failed to generate QR code. Please try again.');
         }
       }
     }
   ]
 };
+

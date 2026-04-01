@@ -1,9 +1,10 @@
-import fs from 'fs';
 import path from 'path';
 import logger from './logger.js';
+import { getStorageSection, setStorageSection, readJson } from './storageStore.js';
 
 const STORAGE_DIR = path.join(process.cwd(), 'storage');
 const AI_CACHE_PATH = path.join(STORAGE_DIR, 'ai_cache.json');
+const AI_CACHE_SECTION = 'aiCache';
 const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
 const GROQ_STT_URL = 'https://api.groq.com/openai/v1/audio/transcriptions';
 const GROQ_TTS_URL = 'https://api.groq.com/openai/v1/audio/speech';
@@ -19,40 +20,296 @@ const rateLimiter = {
   maxRequestsPerMinute: 25
 };
 
-function ensureStorageDir() {
-  if (!fs.existsSync(STORAGE_DIR)) {
-    fs.mkdirSync(STORAGE_DIR, { recursive: true });
-  }
-}
+const CACHED_CONTENT_TYPES = ['wouldYouRather', 'trivia', 'truth', 'dare', 'riddles'];
 
-function loadCache() {
-  try {
-    ensureStorageDir();
-    if (fs.existsSync(AI_CACHE_PATH)) {
-      const raw = fs.readFileSync(AI_CACHE_PATH, 'utf-8');
-      return JSON.parse(raw);
-    }
-  } catch (error) {
-    logger.error('Error loading AI cache:', error);
+function createDefaultCacheState() {
+  const content = {};
+  for (const type of CACHED_CONTENT_TYPES) {
+    content[type] = { items: [], queue: [] };
   }
+
   return {
-    wouldYouRather: [],
-    trivia: [],
-    truth: [],
-    dare: [],
-    riddles: [],
+    content,
     akinator: { questions: [], guessPatterns: {} },
     lastUpdated: {}
   };
 }
 
-function saveCache(cache) {
-  try {
-    ensureStorageDir();
-    fs.writeFileSync(AI_CACHE_PATH, JSON.stringify(cache, null, 2), 'utf-8');
-  } catch (error) {
-    logger.error('Error saving AI cache:', error);
+function shuffleArray(items) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
   }
+  return copy;
+}
+
+function normalizeWhitespace(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function normalizePromptString(value) {
+  return normalizeWhitespace(value)
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/^(truth|dare|question|prompt)\s*[:\-]\s*/i, '');
+}
+
+function normalizeAnswerText(value) {
+  return normalizeWhitespace(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(a|an|the)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sanitizeWouldYouRatherItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const a = normalizePromptString(raw.a);
+  const b = normalizePromptString(raw.b);
+  if (!a || !b || a.toLowerCase() === b.toLowerCase()) return null;
+  return { a, b };
+}
+
+function sanitizeTriviaItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const question = normalizePromptString(raw.question);
+  const rawOptions = Array.isArray(raw.options) ? raw.options : [];
+  const options = rawOptions
+    .map((option) => normalizePromptString(option))
+    .filter(Boolean)
+    .slice(0, 4);
+
+  const uniqueOptions = [];
+  for (const option of options) {
+    if (!uniqueOptions.some((entry) => entry.toLowerCase() === option.toLowerCase())) {
+      uniqueOptions.push(option);
+    }
+  }
+
+  if (!question || uniqueOptions.length !== 4) return null;
+
+  let answer = normalizePromptString(raw.answer);
+  if (!answer) return null;
+
+  const upper = answer.toUpperCase();
+  if (['A', 'B', 'C', 'D'].includes(upper)) {
+    answer = uniqueOptions[['A', 'B', 'C', 'D'].indexOf(upper)];
+  } else {
+    const matched = uniqueOptions.find((option) => option.toLowerCase() === answer.toLowerCase());
+    if (!matched) return null;
+    answer = matched;
+  }
+
+  return { question, options: uniqueOptions, answer };
+}
+
+function sanitizeTruthOrDareItem(raw) {
+  const value = normalizePromptString(raw);
+  if (!value) return null;
+  if (value.length < 8 || value.length > 280) return null;
+  return value;
+}
+
+function sanitizeRiddleItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const riddle = normalizePromptString(raw.riddle);
+  const answer = normalizeAnswerText(raw.answer);
+  const hint = normalizePromptString(raw.hint);
+
+  if (!riddle || !answer || !hint) return null;
+  if (answer.length < 2 || answer.length > 60) return null;
+
+  return { riddle, answer, hint };
+}
+
+function sanitizeGeneratedItems(type, items) {
+  if (!Array.isArray(items)) return [];
+
+  const sanitizer = {
+    wouldYouRather: sanitizeWouldYouRatherItem,
+    trivia: sanitizeTriviaItem,
+    truth: sanitizeTruthOrDareItem,
+    dare: sanitizeTruthOrDareItem,
+    riddles: sanitizeRiddleItem
+  }[type];
+
+  if (!sanitizer) return [];
+
+  return items.map((item) => sanitizer(item)).filter(Boolean);
+}
+
+function getItemFingerprint(type, item) {
+  switch (type) {
+    case 'wouldYouRather':
+      return `${item.a.toLowerCase()}||${item.b.toLowerCase()}`;
+    case 'trivia':
+      return `${item.question.toLowerCase()}||${item.options.map((option) => option.toLowerCase()).join('|')}||${item.answer.toLowerCase()}`;
+    case 'riddles':
+      return `${item.riddle.toLowerCase()}||${item.answer}`;
+    case 'truth':
+    case 'dare':
+      return item.toLowerCase();
+    default:
+      return JSON.stringify(item);
+  }
+}
+
+function normalizeLegacyCache(legacy) {
+  const next = createDefaultCacheState();
+  if (!legacy || typeof legacy !== 'object') return next;
+
+  for (const type of CACHED_CONTENT_TYPES) {
+    const legacyItems = Array.isArray(legacy[type]) ? sanitizeGeneratedItems(type, legacy[type]) : [];
+    next.content[type] = {
+      items: dedupeItems(type, legacyItems),
+      queue: []
+    };
+  }
+
+  next.lastUpdated = legacy.lastUpdated && typeof legacy.lastUpdated === 'object' ? legacy.lastUpdated : {};
+  return next;
+}
+
+function dedupeItems(type, items, existingItems = []) {
+  const seen = new Set(existingItems.map((item) => getItemFingerprint(type, item)));
+  const unique = [];
+
+  for (const item of items) {
+    const key = getItemFingerprint(type, item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+
+  return unique;
+}
+
+function normalizeCacheState(state) {
+  const base = createDefaultCacheState();
+  if (!state || typeof state !== 'object') return base;
+
+  for (const type of CACHED_CONTENT_TYPES) {
+    const current = state.content?.[type] || state[type] || {};
+    const items = sanitizeGeneratedItems(type, Array.isArray(current.items) ? current.items : Array.isArray(current) ? current : []);
+    const uniqueItems = dedupeItems(type, items);
+    const queueSource = Array.isArray(current.queue) ? sanitizeGeneratedItems(type, current.queue) : [];
+    const allowedKeys = new Set(uniqueItems.map((item) => getItemFingerprint(type, item)));
+    const queue = [];
+    const seenQueue = new Set();
+
+    for (const item of queueSource) {
+      const key = getItemFingerprint(type, item);
+      if (!allowedKeys.has(key) || seenQueue.has(key)) continue;
+      seenQueue.add(key);
+      queue.push(item);
+    }
+
+    base.content[type] = {
+      items: uniqueItems,
+      queue
+    };
+  }
+
+  base.lastUpdated = state.lastUpdated && typeof state.lastUpdated === 'object' ? state.lastUpdated : {};
+  base.akinator = state.akinator && typeof state.akinator === 'object'
+    ? {
+        questions: Array.isArray(state.akinator.questions) ? state.akinator.questions : [],
+        guessPatterns: state.akinator.guessPatterns && typeof state.akinator.guessPatterns === 'object'
+          ? state.akinator.guessPatterns
+          : {}
+      }
+    : base.akinator;
+
+  return base;
+}
+
+let aiCacheState = null;
+let aiCacheMigrated = false;
+const generationInFlight = new Map();
+let pendingCacheSave = null;
+
+function persistCache(cache) {
+  aiCacheState = normalizeCacheState(cache);
+  setStorageSection(AI_CACHE_SECTION, aiCacheState);
+  return aiCacheState;
+}
+
+function scheduleCacheSave() {
+  if (pendingCacheSave) return;
+  pendingCacheSave = setTimeout(() => {
+    pendingCacheSave = null;
+    if (aiCacheState) {
+      persistCache(aiCacheState);
+    }
+  }, 500);
+}
+
+function saveCache(cache, options = {}) {
+  aiCacheState = normalizeCacheState(cache);
+  if (options.immediate === false) {
+    scheduleCacheSave();
+    return aiCacheState;
+  }
+  return persistCache(aiCacheState);
+}
+
+function migrateLegacyCacheIfNeeded() {
+  if (aiCacheMigrated) return;
+  aiCacheMigrated = true;
+
+  const current = normalizeCacheState(getStorageSection(AI_CACHE_SECTION, {}));
+  const hasCurrentData = CACHED_CONTENT_TYPES.some((type) => current.content[type].items.length > 0);
+  if (hasCurrentData) {
+    aiCacheState = current;
+    return;
+  }
+
+  const legacy = normalizeLegacyCache(readJson(AI_CACHE_PATH, {}));
+  const hasLegacyData = CACHED_CONTENT_TYPES.some((type) => legacy.content[type].items.length > 0);
+  aiCacheState = hasLegacyData ? saveCache(legacy) : current;
+}
+
+function loadCache() {
+  migrateLegacyCacheIfNeeded();
+  if (!aiCacheState) {
+    aiCacheState = normalizeCacheState(getStorageSection(AI_CACHE_SECTION, {}));
+  }
+  return aiCacheState;
+}
+
+function ensureQueue(cache, type) {
+  const bucket = cache.content[type];
+  if (!bucket) return;
+  if (bucket.queue.length === 0 && bucket.items.length > 0) {
+    bucket.queue = shuffleArray(bucket.items);
+  }
+}
+
+function getFallbackItem(fallbackArray = []) {
+  if (!Array.isArray(fallbackArray) || fallbackArray.length === 0) return null;
+  return fallbackArray[Math.floor(Math.random() * fallbackArray.length)];
+}
+
+function shouldBackfill(bucket, minItems = 40) {
+  return (bucket?.items?.length || 0) < minItems;
+}
+
+function triggerBackgroundGeneration(type, count = 50) {
+  if (generationInFlight.has(type)) return generationInFlight.get(type);
+
+  const task = generateBulkContent(type, count)
+    .catch((error) => {
+      logger.error(`Background generation failed for ${type}:`, error);
+      return [];
+    })
+    .finally(() => {
+      generationInFlight.delete(type);
+    });
+
+  generationInFlight.set(type, task);
+  return task;
 }
 
 async function checkRateLimit() {
@@ -142,8 +399,20 @@ async function askAI(question, context = '') {
 }
 
 async function generateBulkContent(type, count = 50) {
+  if (generationInFlight.has(type)) {
+    return generationInFlight.get(type);
+  }
+
+  const task = generateBulkContentInternal(type, count);
+  generationInFlight.set(type, task);
+
+  return task.finally(() => {
+    generationInFlight.delete(type);
+  });
+}
+
+async function generateBulkContentInternal(type, count = 50) {
   const cache = loadCache();
-  
   const prompts = {
     wouldYouRather: `Generate ${count} unique "Would You Rather" questions for a chat game. Make them fun, thought-provoking, and appropriate for all ages. Mix between silly, philosophical, and creative scenarios.
 
@@ -194,16 +463,21 @@ Example: [{"riddle": "What has keys but no locks?", "answer": "piano", "hint": "
     });
     
     const parsed = JSON.parse(response);
-    const items = Array.isArray(parsed) ? parsed : (parsed.items || parsed.questions || parsed.data || []);
-    
-    if (items.length > 0) {
-      cache[type] = [...(cache[type] || []), ...items];
+    const generatedItems = Array.isArray(parsed) ? parsed : (parsed.items || parsed.questions || parsed.data || []);
+    const sanitized = sanitizeGeneratedItems(type, generatedItems);
+    const uniqueNewItems = dedupeItems(type, sanitized, cache.content[type].items);
+
+    if (uniqueNewItems.length > 0) {
+      cache.content[type].items.push(...uniqueNewItems);
+      cache.content[type].queue.push(...shuffleArray(uniqueNewItems));
       cache.lastUpdated[type] = Date.now();
-      saveCache(cache);
-      logger.info(`Generated ${items.length} new ${type} items`);
+      saveCache(cache, { immediate: true });
+      logger.info({ type, generated: generatedItems.length, accepted: uniqueNewItems.length, total: cache.content[type].items.length }, 'Generated AI game content');
+    } else {
+      logger.warn({ type, generated: generatedItems.length, accepted: 0 }, 'AI generation returned no usable new game items');
     }
     
-    return items;
+    return uniqueNewItems;
   } catch (error) {
     logger.error(`Failed to generate ${type} content:`, error);
     return [];
@@ -212,75 +486,59 @@ Example: [{"riddle": "What has keys but no locks?", "answer": "piano", "hint": "
 
 function getCachedItem(type, fallbackArray = []) {
   const cache = loadCache();
-  const items = cache[type] || [];
-  
-  if (items.length > 0) {
-    const item = items.shift();
-    cache[type] = items;
-    saveCache(cache);
+  ensureQueue(cache, type);
+  const bucket = cache.content[type];
+
+  if (bucket?.queue?.length > 0) {
+    const item = bucket.queue.shift();
+    saveCache(cache, { immediate: false });
     
-    if (items.length < 10) {
-      generateBulkContent(type, 50).catch(err => 
-        logger.error(`Background generation failed for ${type}:`, err)
-      );
+    if (shouldBackfill(bucket)) {
+      triggerBackgroundGeneration(type, 50);
     }
     
     return item;
   }
   
-  generateBulkContent(type, 50).catch(err => 
-    logger.error(`Background generation failed for ${type}:`, err)
-  );
+  triggerBackgroundGeneration(type, 50);
   
-  if (fallbackArray.length > 0) {
-    return fallbackArray[Math.floor(Math.random() * fallbackArray.length)];
-  }
-  
-  return null;
+  return getFallbackItem(fallbackArray);
 }
 
 async function getOrFetchItem(type, fallbackArray = []) {
   const cache = loadCache();
-  let items = cache[type] || [];
-  
-  if (items.length === 0) {
+  ensureQueue(cache, type);
+  let bucket = cache.content[type];
+
+  if (!bucket || bucket.queue.length === 0) {
     try {
-      const newItems = await generateBulkContent(type, 50);
-      if (newItems && newItems.length > 0) {
-        items = newItems;
-      }
+      await generateBulkContent(type, 50);
     } catch (err) {
       logger.error(`Failed to fetch ${type}:`, err);
     }
   }
-  
+
   const updatedCache = loadCache();
-  items = updatedCache[type] || [];
-  
-  if (items.length > 0) {
-    const item = items.shift();
-    updatedCache[type] = items;
-    saveCache(updatedCache);
-    
-    if (items.length < 10) {
-      generateBulkContent(type, 50).catch(err => 
-        logger.error(`Background generation failed for ${type}:`, err)
-      );
+  ensureQueue(updatedCache, type);
+  bucket = updatedCache.content[type];
+
+  if (bucket?.queue?.length > 0) {
+    const item = bucket.queue.shift();
+    saveCache(updatedCache, { immediate: false });
+
+    if (shouldBackfill(bucket)) {
+      triggerBackgroundGeneration(type, 50);
     }
     
     return item;
   }
-  
-  if (fallbackArray.length > 0) {
-    return fallbackArray[Math.floor(Math.random() * fallbackArray.length)];
-  }
-  
-  return null;
+
+  return getFallbackItem(fallbackArray);
 }
 
 function getCacheCount(type) {
   const cache = loadCache();
-  return (cache[type] || []).length;
+  return cache.content[type]?.items?.length || 0;
 }
 
 async function ensureCacheHasItems(type, minCount = 10, generateCount = 50) {

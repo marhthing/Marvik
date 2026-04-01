@@ -36,7 +36,7 @@ export default {
   name: 'env',
   description: 'View or update .env variables',
   version: '1.1.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'env',
@@ -121,3 +121,4 @@ export default {
     }
   ]
 };
+

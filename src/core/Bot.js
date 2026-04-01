@@ -6,15 +6,21 @@ import PermissionManager from './PermissionManager.js';
 import RateLimiter from '../utils/rateLimiter.js';
 import MediaHandler from '../utils/mediaHandler.js';
 import WhatsAppAdapter from '../adapters/WhatsAppAdapter.js';
-import { startKeepAlive, stopKeepAlive } from '../utils/keepAlive.js';
 import fs from 'fs';
 import path from 'path';
 import pendingActions from '../utils/pendingActions.js';
-import memoryStore from '../utils/memory.js';
+import memoryStore from '../state/memory.js';
 import { getOwnerJidFromConfig } from '../utils/whatsappJid.js';
-import { getKnownContacts } from '../utils/knownEntities.js';
+import { getKnownContacts } from '../state/knownEntities.js';
+import { getStickerCommands } from '../state/stickerCommands.js';
+import {
+  clearPendingLifecycleAction,
+  getPendingLifecycleAction,
+  markStartup,
+  recordLifecycleEvent
+} from '../state/lifecycle.js';
 
-const RESTART_NOTICE_PATH = path.resolve(process.cwd(), '.restart_notice');
+const STARTUP_OWNER_IMAGE_PATH = path.resolve(process.cwd(), 'assets', 'marvik-logo.png');
 
 export default class Bot extends EventEmitter {
   constructor(config) {
@@ -59,8 +65,6 @@ export default class Bot extends EventEmitter {
 
   async start() {
     this.logger.info(`Starting ${this.config.botName}...`);
-    
-    startKeepAlive();
 
     if (this.config.platforms.whatsapp) {
       await this.initializeWhatsApp();
@@ -83,6 +87,8 @@ export default class Bot extends EventEmitter {
     }
 
     await this.notifyOwnerStartup();
+    await this.notifyLifecycleCompletion();
+    markStartup();
     this.logger.info(`${this.config.botName} started successfully on ${this.adapters.size} platform(s)`);
   }
 
@@ -118,11 +124,7 @@ export default class Bot extends EventEmitter {
 
   async restart() {
     this.logger.info('Restarting bot...');
-    try {
-      fs.writeFileSync(RESTART_NOTICE_PATH, 'restart', 'utf8');
-    } catch (error) {
-      this.logger.warn({ error }, 'Failed to persist restart notice');
-    }
+    recordLifecycleEvent('restart_exit');
     await this.stop();
     process.exit(0);
   }
@@ -161,24 +163,77 @@ export default class Bot extends EventEmitter {
     const ownerJid = this.getOwnerJid();
     if (!whatsapp || !ownerJid) return;
 
-    let isRestart = false;
-    try {
-      isRestart = fs.existsSync(RESTART_NOTICE_PATH);
-    } catch {}
+    const pendingAction = getPendingLifecycleAction();
+    const isRestart = pendingAction?.type === 'restart';
 
     const ownerLabel = await this.getOwnerDisplayName(ownerJid);
     const message = isRestart
       ? `Hi ${ownerLabel}, i have restarted`
       : `Hi ${ownerLabel}, i have started`;
+    const guideCaption = [
+      `Marvik is ${isRestart ? 'back online after a restart' : 'now online'}.`,
+      '',
+      'Quick guide:',
+      '- Use `.menu` to view commands',
+      '- Use `.help <command>` for command usage',
+      '- Use `.stats` to inspect activity',
+      '- Use `.restart` or `.shutdown` for lifecycle control',
+      '- Check `.env` when you want to adjust config'
+    ].join('\n');
 
     try {
-      await whatsapp.sendMessage(ownerJid, message);
-      if (isRestart && fs.existsSync(RESTART_NOTICE_PATH)) {
-        fs.unlinkSync(RESTART_NOTICE_PATH);
+      if (!isRestart && fs.existsSync(STARTUP_OWNER_IMAGE_PATH)) {
+        try {
+          const imageBuffer = fs.readFileSync(STARTUP_OWNER_IMAGE_PATH);
+          await whatsapp.sendMedia(ownerJid, imageBuffer, 'image', { caption: guideCaption });
+        } catch (error) {
+          this.logger.warn({ error }, 'Failed to send startup guide image to owner');
+        }
       }
+
+      await whatsapp.sendMessage(ownerJid, message);
     } catch (error) {
       this.logger.warn({ error }, 'Failed to send startup message to owner');
     }
+  }
+
+  async notifyLifecycleCompletion() {
+    const whatsapp = this.getAdapter('whatsapp');
+    const pendingAction = getPendingLifecycleAction();
+    if (!whatsapp || !pendingAction) return;
+
+    try {
+      if (pendingAction.type === 'restart' && pendingAction.chatId) {
+        const senderLabel = pendingAction.senderName || pendingAction.senderId?.split('@')[0] || 'owner';
+        let reacted = false;
+        if (pendingAction.messageKey) {
+          try {
+            await whatsapp.sendReaction(pendingAction.chatId, pendingAction.messageKey, '✅');
+            reacted = true;
+          } catch (error) {
+            this.logger.warn({ error }, 'Failed to send restart completion reaction');
+          }
+        }
+
+        if (!reacted) {
+          await whatsapp.sendMessage(
+            pendingAction.chatId,
+            `Restart complete. ${this.config.botName} is back online, ${senderLabel}.`
+          );
+        }
+
+        recordLifecycleEvent('restart_completed', {
+          chatId: pendingAction.chatId,
+          senderId: pendingAction.senderId || null,
+          reacted
+        });
+      }
+    } catch (error) {
+      this.logger.warn({ error }, 'Failed to send lifecycle completion message');
+      return;
+    }
+
+    clearPendingLifecycleAction();
   }
 
   async handleMessage(messageContext) {
@@ -222,8 +277,7 @@ export default class Bot extends EventEmitter {
         const fileSha256 = stickerMessage.fileSha256;
         if (fileSha256) {
           const stickerId = Buffer.from(fileSha256).toString('base64');
-          const storageUtil = (await import('../utils/storageUtil.js')).default;
-          const stickerCommands = storageUtil.getStickerCommands();
+          const stickerCommands = getStickerCommands();
           const boundCmd = stickerCommands[stickerId];
           
             if (boundCmd) {
@@ -352,8 +406,6 @@ export default class Bot extends EventEmitter {
     this._stopping = true;
     this.logger.info('Stopping bot...');
     
-    stopKeepAlive();
-    
     for (const [platform, adapter] of this.adapters) {
       this.logger.info(`Disconnecting ${platform}...`);
       try {
@@ -361,6 +413,11 @@ export default class Bot extends EventEmitter {
       } catch (e) {
         this.logger.error({ error: e }, `Error disconnecting ${platform}`);
       }
+    }
+    try {
+      await memoryStore.flushWrites();
+    } catch (error) {
+      this.logger.warn({ error }, 'Failed to flush memory store writes before shutdown');
     }
     this.logger.info('Bot stopped');
   }

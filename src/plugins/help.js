@@ -2,7 +2,7 @@ export default {
   name: 'help',
   description: 'Show help for all commands',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'help',
@@ -28,3 +28,4 @@ export default {
     }
   ]
 };
+

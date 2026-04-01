@@ -14,12 +14,15 @@ import MessageContext from '../core/MessageContext.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import memoryStore from '../utils/memory.js';
+import memoryStore from '../state/memory.js';
 import readline from 'readline';
-import { upsertKnownChat, upsertKnownContact, mapLidToJid, dedupeKnownEntities } from '../utils/knownEntities.js';
+import { upsertKnownChat, upsertKnownContact, mapLidToJid, dedupeKnownEntities } from '../state/knownEntities.js';
+import { wrapClientSendMessage } from '../utils/i18n.js';
+import logger from '../utils/logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const adapterLogger = logger.child({ component: 'whatsapp-adapter' });
 
 export default class WhatsAppAdapter extends BaseAdapter {
   constructor(config) {
@@ -38,7 +41,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
     this.isFirstPairingAttempt = true;
     this.authFailures = 0;
     this.contacts = new Map();
-  }hmm
+  }
 
   normalizeNumber(value) {
     return (value || '').replace(/[^\d]/g, '');
@@ -227,6 +230,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
         return { message: null };
       }
     });
+    wrapClientSendMessage(this.client);
 
     this.setupEventHandlers(saveCreds);
     this._setupMediaDownloader();
@@ -252,6 +256,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
         return { message: null };
       }
     });
+    wrapClientSendMessage(this.client);
 
     this.setupEventHandlers(saveCreds, sessionPath);
     this._setupMediaDownloader();
@@ -316,7 +321,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
           try {
             await delay(2000);
             const code = await this.client.requestPairingCode(this.phoneNumber);
-            console.log(`\n🔑 Pairing Code: ${code}\n`);
+            adapterLogger.info({ code }, 'Pairing code generated');
           } catch (error) {
             this.logger.error({ error }, 'Failed to request pairing code');
           }
@@ -815,6 +820,7 @@ export default class WhatsAppAdapter extends BaseAdapter {
       message.document = mediaBuffer;
       message.mimetype = mimetype || 'application/octet-stream';
       if (options.fileName) message.fileName = options.fileName;
+      if (options.caption) message.caption = options.caption;
     } else if (type === 'sticker') {
       message.sticker = mediaBuffer;
     } else {

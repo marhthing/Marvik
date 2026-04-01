@@ -1,8 +1,12 @@
+import logger from '../utils/logger.js';
+
+const pluginLogger = logger.child({ component: 'jid' });
+
 export default {
   name: 'jid',
   description: 'Show the chat JID or the JID of a replied user',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'jid',
@@ -26,7 +30,7 @@ export default {
             await ctx.reply(ctx.chatId);
           }
         } catch (err) {
-          console.error('JID PLUGIN ERROR:', err && (err.stack || err.message || err));
+          pluginLogger.error({ error: err }, 'JID command failed');
           if (ctx && ctx.reply) {
             await ctx.reply('❌ Error in jid command: ' + (err && err.message ? err.message : String(err)));
           }
@@ -35,3 +39,4 @@ export default {
     }
   ]
 };
+

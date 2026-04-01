@@ -1,5 +1,5 @@
 {
-  "name": "matbot",
+  "name": "marvik",
   "version": "2.0.0",
   "description": "WhatsApp bot with a modular plugin system",
   "main": "index.js",
@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "node index.js",
+    "docs:commands": "node scripts/generate-commands-docs.mjs",
     "test": "echo \"No tests yet\" && exit 0"
   },
   "keywords": [
@@ -14,8 +15,8 @@
     "bot",
     "modular"
   ],
-  "author": "MATDEV",
-  "license": "MIT",
+  "author": "Are Martins",
+  "license": "UNLICENSED",
   "dependencies": {
     "@ffmpeg-installer/ffmpeg": "^1.1.0",
     "@hapi/boom": "^10.0.1",

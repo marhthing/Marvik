@@ -1,4 +1,4 @@
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
 import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
@@ -6,7 +6,7 @@ export default {
   name: 'enhance',
   description: 'Enhance the quality of an image (upscale and sharpen)',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'enhance',
@@ -49,10 +49,10 @@ export default {
               .sharpen(3, 1.5, 0.5)
               .modulate({ brightness: 1.08, contrast: 1.15 })
               .toBuffer();
-            if (shouldReact()) await ctx.react('✅');
+            await reactIfEnabled(ctx, '✅');
             await ctx._adapter.sendMedia(ctx.chatId, enhancedBuffer, { type: 'image' });
           } catch (e) {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             await ctx.reply('❌ Failed to enhance image.');
           }
         } else if (media.type === 'video') {
@@ -83,10 +83,10 @@ export default {
                 .on('error', (err) => reject(err));
             });
             const vidBuffer = await readFile(tmpOut);
-            if (shouldReact()) await ctx.react('✅');
+            await reactIfEnabled(ctx, '✅');
             await ctx._adapter.sendMedia(ctx.chatId, vidBuffer, { type: 'video' });
           } catch (e) {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             await ctx.reply(`❌ Failed to enhance video.\nError: ${e?.message || e}`);
           } finally {
             try { await unlink(tmpIn); } catch {}
@@ -97,3 +97,4 @@ export default {
     }
   ]
 };
+

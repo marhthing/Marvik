@@ -190,5 +190,24 @@ class PendingActions {
     } catch { return true; }
   }
 
+  export async function reactIfEnabled(ctx, emoji) {
+    if (!shouldReact() || !ctx?.react || !emoji) return false;
+    try {
+      await ctx.react(emoji);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  export function createReactionHelpers(ctx) {
+    return {
+      react: (emoji) => reactIfEnabled(ctx, emoji),
+      loading: () => reactIfEnabled(ctx, '⏳'),
+      success: () => reactIfEnabled(ctx, '✅'),
+      error: () => reactIfEnabled(ctx, '❌')
+    };
+  }
+
 const pendingActions = new PendingActions();
 export default pendingActions;

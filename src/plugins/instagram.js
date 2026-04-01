@@ -1,8 +1,8 @@
 import { instagramGetUrl } from 'instagram-url-direct';
 import axios from 'axios';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendImageBuffer, sendVideoBuffer } from '../utils/downloadFlow.js';
+import { formatFileSize, promptNumericSelection, reactPendingOrigin, sendImageBuffer, sendVideoBuffer, withDelayedNotice } from '../utils/downloadFlow.js';
 
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
@@ -80,7 +80,7 @@ export default {
   name: 'instagram',
   description: 'Instagram media downloader with quality selection',
   version: '2.1.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'ig',
@@ -112,12 +112,12 @@ export default {
             return await ctx.reply('Please provide a valid Instagram URL (post/reel/video)');
           }
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           try {
-            const data = await instagramGetUrl(validatedUrl.url);
+            const data = await withDelayedNotice(ctx, () => instagramGetUrl(validatedUrl.url));
             if (!data?.url_list?.length) {
-              if (shouldReact()) await ctx.react('❌');
+              await reactIfEnabled(ctx, '❌');
               return await ctx.reply('Could not fetch media. The post may be private or unavailable.');
             }
 
@@ -136,7 +136,7 @@ export default {
               const size = await getFileSize(single.url);
               single.caption = single.isVideo && size ? `Instagram video (${formatFileSize(size)})` : single.caption;
               await sendInstagramItem(ctx, single);
-              if (shouldReact()) await ctx.react('✅');
+              await reactIfEnabled(ctx, '✅');
               return;
             }
 
@@ -162,20 +162,24 @@ export default {
               type: 'instagram_quality',
               prompt,
               choices,
-              handler: async (replyCtx, selected) => {
-                if (shouldReact()) await replyCtx.react('⏳');
+              handler: async (replyCtx, selected, choice, pending) => {
+                await reactIfEnabled(replyCtx, '⏳');
                 try {
                   if (selected.downloadAll) {
-                    for (const item of mediaItems) {
-                      await sendInstagramItem(replyCtx, item);
-                      await new Promise(resolve => setTimeout(resolve, 1000));
+                      await withDelayedNotice(replyCtx, async () => {
+                        for (const item of mediaItems) {
+                          await sendInstagramItem(replyCtx, item);
+                          await new Promise(resolve => setTimeout(resolve, 1000));
+                        }
+                      });
+                    } else {
+                      await withDelayedNotice(replyCtx, () => sendInstagramItem(replyCtx, selected));
                     }
-                  } else {
-                    await sendInstagramItem(replyCtx, selected);
-                  }
-                  if (shouldReact()) await replyCtx.react('✅');
+                  await reactIfEnabled(replyCtx, '✅');
+                  await reactPendingOrigin(replyCtx, pending, '✅');
                 } catch (error) {
-                  if (shouldReact()) await replyCtx.react('❌');
+                  await reactIfEnabled(replyCtx, '❌');
+                  await reactPendingOrigin(replyCtx, pending, '❌');
                   const message = error.message?.includes('Video too large')
                     ? error.message
                     : 'Failed to download selected media.';
@@ -185,7 +189,7 @@ export default {
               }
             });
           } catch (error) {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
 
             let errorMsg = 'Download failed. ';
             if (error.message?.includes('private')) {
@@ -198,10 +202,11 @@ export default {
             await ctx.reply(errorMsg);
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while processing the Instagram media');
         }
       }
     }
   ]
 };
+

@@ -7,7 +7,7 @@ export default {
   name: 'lyrics',
   description: 'Find lyrics for a song',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'lyrics',
@@ -34,3 +34,4 @@ export default {
     }
   ]
 };
+

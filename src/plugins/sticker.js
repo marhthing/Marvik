@@ -1,10 +1,14 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import envMemory from '../utils/envMemory.js';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
 import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 import { downloadPinterestMediaToBuffer, getPinterestMediaInfo, validatePinterestUrl } from '../utils/pinterest.js';
+import { getStickerCommands, setStickerCommands } from '../state/stickerCommands.js';
+import logger from '../utils/logger.js';
+
+const pluginLogger = logger.child({ component: 'sticker' });
 
 function isPinterestUrl(value) {
   return /(?:https?:\/\/)?(?:www\.)?(?:pinterest\.com\/pin\/|pin\.it\/)/i.test(value || '');
@@ -14,7 +18,7 @@ export default {
   name: 'sticker',
   description: 'Convert an image to a sticker',
   version: '1.1.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'sticker',
@@ -51,7 +55,7 @@ export default {
             sourceType = mediaInfo.isVideo ? 'video' : 'image';
             buffer = await downloadPinterestMediaToBuffer(selectedUrl);
           } catch (e) {
-            console.error('[sticker] pinterest download error', e?.message || e, e?.stack || '');
+            pluginLogger.error({ error: e, input }, 'Pinterest download failed');
             return await ctx.reply('❌ Failed to download media from Pinterest. The pin may be private, deleted, or temporarily unavailable.');
           }
         } else {
@@ -65,18 +69,18 @@ export default {
           try {
             buffer = await downloadMediaBuffer(ctx, media);
           } catch (e) {
-            console.error('[sticker] download error', e?.message || e, e?.stack || '');
+            pluginLogger.error({ error: e, sourceType }, 'Media download failed');
             return await ctx.reply('❌ Failed to download media. The media might have been deleted from WhatsApp servers.');
           }
         }
 
         if (!hasValidMediaHeader(buffer) && sourceType === 'image') {
           const sig = buffer?.slice(0, 16);
-          console.error('[sticker] invalid header', {
+          pluginLogger.warn({
             type: sourceType,
             size: buffer?.length,
             head: sig ? sig.toString('hex') : null
-          });
+          }, 'Invalid media header');
           return await ctx.reply('❌ The downloaded image appears corrupted or unsupported.');
         }
 
@@ -94,10 +98,10 @@ export default {
           config = {};
         }
 
-        const stickerPack = envMemory.get('STICKER_PACK') || config.stickerPack || 'MATDEV Bot';
+        const stickerPack = envMemory.get('STICKER_PACK') || config.stickerPack || 'Marvik';
         const stickerAuthor = envMemory.get('STICKER_AUTHOR') || config.stickerAuthor || 'Bot';
 
-        if (shouldReact()) await ctx.react('⏳');
+        await reactIfEnabled(ctx, '⏳');
 
         try {
           const sticker = new Sticker(buffer, {
@@ -109,10 +113,10 @@ export default {
           });
 
           const stickerBuffer = await sticker.toBuffer();
-          if (shouldReact()) await ctx.react('✅');
+          await reactIfEnabled(ctx, '✅');
           await ctx._adapter.sendMedia(ctx.chatId, stickerBuffer, { type: 'sticker' });
         } catch (e) {
-          console.error('[sticker] Create sticker error:', e?.message || e, e?.stack || '');
+          pluginLogger.error({ error: e }, 'Failed to create sticker');
           try {
             const sticker = new Sticker(buffer, {
               pack: stickerPack,
@@ -122,13 +126,13 @@ export default {
               categories: ['📌']
             });
             const stickerBuffer = await sticker.toBuffer();
-            if (shouldReact()) await ctx.react('✅');
+            await reactIfEnabled(ctx, '✅');
             await ctx._adapter.sendMedia(ctx.chatId, stickerBuffer, { type: 'sticker' });
             return;
           } catch (e2) {
-            console.error('[sticker] Create sticker FULL error:', e2?.message || e2, e2?.stack || '');
+            pluginLogger.error({ error: e2 }, 'Failed to create sticker with FULL mode');
           }
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply(`❌ Failed to create sticker. ${e?.message ? `Error: ${e.message}` : 'Make sure the media is a valid image or video.'}`);
         }
       }
@@ -158,11 +162,10 @@ export default {
         }
 
         const stickerId = Buffer.from(fileSha256).toString('base64');
-        const storageUtil = (await import('../utils/storageUtil.js')).default;
-        const stickerCommands = storageUtil.getStickerCommands();
+        const stickerCommands = getStickerCommands();
 
         stickerCommands[stickerId] = cmd.startsWith('.') ? cmd.slice(1) : cmd;
-        storageUtil.setStickerCommands(stickerCommands);
+        setStickerCommands(stickerCommands);
 
         await ctx.reply(`✅ Successfully bound command \`.${stickerCommands[stickerId]}\` to this sticker.`);
       }
@@ -187,8 +190,7 @@ export default {
         }
 
         const stickerId = Buffer.from(fileSha256).toString('base64');
-        const storageUtil = (await import('../utils/storageUtil.js')).default;
-        const stickerCommands = storageUtil.getStickerCommands();
+        const stickerCommands = getStickerCommands();
 
         if (!stickerCommands[stickerId]) {
           return await ctx.reply('❌ This sticker has no command bound to it.');
@@ -196,10 +198,11 @@ export default {
 
         const oldCmd = stickerCommands[stickerId];
         delete stickerCommands[stickerId];
-        storageUtil.setStickerCommands(stickerCommands);
+        setStickerCommands(stickerCommands);
 
         await ctx.reply(`✅ Successfully unbound command \`.${oldCmd}\` from this sticker.`);
       }
     }
   ]
 };
+

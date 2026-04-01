@@ -1,31 +1,22 @@
-import memoryStore from '../utils/memory.js';
+import memoryStore from '../state/memory.js';
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { getBooleanEnv, setEnvValue } from '../utils/envStore.js';
-import { getStorageSection, patchStorageSection } from '../utils/storageStore.js';
+import {
+  getAntideleteConfig,
+  getStatusAntideleteConfig,
+  setAntideleteConfig,
+  setStatusAntideleteConfig
+} from '../state/antidelete.js';
 import {
   applyDestinationCommand,
-  normalizeDestinationConfig,
   normalizeDestinationJid,
   normalizeDirectJid,
   normalizeJidList,
   resolveDestinationJid
 } from '../utils/destinationRouter.js';
+import logger from '../utils/logger.js';
 
-const STATUS_ANTIDELETE_DEFAULT = {
-  dest: 'owner',
-  jid: null,
-  scope: 'all',
-  only: [],
-  except: []
-};
-
-function getAntideleteConfig() {
-  return getStorageSection('antidelete', { dest: 'owner', jid: null });
-}
-
-function setAntideleteConfig(newConfig) {
-  return patchStorageSection('antidelete', newConfig, { dest: 'owner', jid: null });
-}
+const pluginLogger = logger.child({ component: 'antidelete' });
 
 function setAntideleteEnabled(enabled) {
   setEnvValue('ANTIDELETE_ENABLED', enabled ? 'on' : 'off');
@@ -33,37 +24,6 @@ function setAntideleteEnabled(enabled) {
 
 function getAntideleteEnabled() {
   return getBooleanEnv('ANTIDELETE_ENABLED', true);
-}
-
-function getStatusAntideleteConfig() {
-  const config = getStorageSection('statusantidelete', STATUS_ANTIDELETE_DEFAULT);
-  const normalized = normalizeDestinationConfig(config, STATUS_ANTIDELETE_DEFAULT, { allowGroup: true });
-  return {
-    dest: normalized.dest,
-    jid: normalized.jid,
-    scope: ['all', 'only', 'except'].includes(config.scope) ? config.scope : 'all',
-    only: normalizeJidList(config.only),
-    except: normalizeJidList(config.except)
-  };
-}
-
-function setStatusAntideleteConfig(newConfig) {
-  const current = getStatusAntideleteConfig();
-  const next = {
-    ...current,
-    ...newConfig
-  };
-
-  next.dest = next.dest === 'custom' ? 'custom' : 'owner';
-  next.jid = next.dest === 'custom' ? normalizeDestinationJid(next.jid, { allowGroup: true }) : null;
-  next.scope = ['all', 'only', 'except'].includes(next.scope) ? next.scope : 'all';
-  next.only = normalizeJidList(next.only);
-  next.except = normalizeJidList(next.except);
-
-  if (next.scope !== 'only') next.only = [];
-  if (next.scope !== 'except') next.except = [];
-
-  return patchStorageSection('statusantidelete', next, STATUS_ANTIDELETE_DEFAULT);
 }
 
 function getStatusAntideleteEnabled() {
@@ -178,7 +138,7 @@ async function sendRecoveredMedia(whatsappAdapter, sourceMessage, chatId, delete
   }
 
   if (!buffer) {
-    console.error(`[${logPrefix}] Failed to recover media: not available from server or disk`);
+    pluginLogger.warn({ logPrefix, chatId, deletedMessageId }, 'Media recovery failed: not available from server or disk');
     return;
   }
 
@@ -196,7 +156,7 @@ async function sendRecoveredMedia(whatsappAdapter, sourceMessage, chatId, delete
       { quoted: sentNotif }
     );
   } catch (error) {
-    console.error(`[${logPrefix}] Failed to send recovered media:`, error.message);
+    pluginLogger.error({ error, logPrefix, chatId, deletedMessageId, mediaType }, 'Failed to send recovered media');
   }
 }
 
@@ -210,7 +170,7 @@ export default {
   name: 'antidelete',
   description: 'Recovers deleted messages and deleted statuses',
   version: '1.7.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'delete',
@@ -365,7 +325,7 @@ export default {
         try {
           await processDeletion(deletion);
         } catch (error) {
-          console.error('[antidelete] Error processing queued deletion:', error);
+          pluginLogger.error({ error }, 'Error processing queued deletion');
         }
         if (deletionQueue.length > 0) {
           await new Promise(resolve => setTimeout(resolve, 100));
@@ -452,7 +412,7 @@ export default {
             mentions: [senderJid]
           });
         } catch (error) {
-          console.error('[antidelete] Failed to send notification:', error.message);
+          pluginLogger.error({ error, chatId, deletedMessageId, destJid }, 'Failed to send antidelete notification');
           processedDeletes.set(dedupeKey, now);
           return;
         }
@@ -473,7 +433,7 @@ export default {
 
         processedDeletes.set(dedupeKey, now);
       } catch (error) {
-        console.error('[antidelete] Error processing deletion:', error);
+        pluginLogger.error({ error, chatId, deletedMessageId }, 'Error processing deletion');
         processedDeletes.set(dedupeKey, Date.now());
       } finally {
         processingDeletes.delete(dedupeKey);
@@ -508,7 +468,7 @@ export default {
           mentions: senderJid ? [senderJid] : []
         });
       } catch (error) {
-        console.error('[statusantidelete] Failed to send notification:', error.message);
+        pluginLogger.error({ error, chatId, deletedMessageId, destJid }, 'Failed to send status antidelete notification');
         return;
       }
 
@@ -553,10 +513,10 @@ export default {
           processingDeletes.add(dedupeKey);
           deletionQueue.push({ deletedKey, chatId, deletedMessageId });
           processQueue().catch(error => {
-            console.error('[antidelete] Queue processor error:', error);
+            pluginLogger.error({ error }, 'Queue processor error');
           });
         } catch (error) {
-          console.error('[antidelete] Error queueing deletion:', error);
+          pluginLogger.error({ error }, 'Error queueing deletion');
         }
       }
     };
@@ -573,3 +533,4 @@ export default {
     };
   }
 };
+

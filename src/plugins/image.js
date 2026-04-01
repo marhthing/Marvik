@@ -1,11 +1,11 @@
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import fetch from 'node-fetch';
 
 export default {
   name: 'image',
   description: 'Generate an image from a prompt using Pollinations.ai',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'image',
@@ -25,7 +25,7 @@ export default {
         if (!prompt || !prompt.trim()) {
           return await ctx.reply('Please provide a prompt or reply to a message with .image\n\nUsage: .image a cat astronaut on the moon');
         }
-        if (shouldReact()) await ctx.react('🎨');
+        await reactIfEnabled(ctx, '🎨');
         try {
           // Pollinations API: https://image.pollinations.ai/prompt/<prompt>
           const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}`;
@@ -38,12 +38,13 @@ export default {
             mimetype: 'image/png',
             caption: `Prompt: ${prompt}`
           });
-          if (shouldReact()) await ctx.react('✅');
+          await reactIfEnabled(ctx, '✅');
         } catch (e) {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('❌ Failed to generate image. Please try again later.');
         }
       }
     }
   ]
 };
+

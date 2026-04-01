@@ -1,13 +1,16 @@
 import ai from '../utils/ai.js';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import fs from 'fs';
 import path from 'path';
+import logger from '../utils/logger.js';
+
+const pluginLogger = logger.child({ component: 'audio' });
 
 export default {
   name: 'audio',
   description: 'Speech-to-Text and Text-to-Speech features',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'tts',
@@ -45,7 +48,7 @@ export default {
             return await ctx.reply('Please provide text or reply to a message.\n\nUsage: .tts Hello world\nOr: .tts austin Hello world');
           }
           
-          if (shouldReact()) await ctx.react('🗣️');
+          await reactIfEnabled(ctx, '🗣️');
           
           const audioBuffer = await ai.textToSpeech(text, voice);
 
@@ -107,11 +110,11 @@ export default {
             quoted: ctx.messageId
           });
           
-          if (shouldReact()) await ctx.react('✅');
+          await reactIfEnabled(ctx, '✅');
         } catch (error) {
-          console.error('TTS error:', error);
+          pluginLogger.error({ error }, 'TTS failed');
           await ctx.reply('Failed to convert text to speech. ' + (error.message || ''));
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
         }
       }
     },
@@ -135,22 +138,22 @@ export default {
             return await ctx.reply('Please reply to an audio message or voice note with .stt');
           }
           
-          if (shouldReact()) await ctx.react('✍️');
+          await reactIfEnabled(ctx, '✍️');
           
           const buffer = await ctx._adapter.downloadMedia({ raw: message.raw || message });
           const transcription = await ai.speechToText(buffer, 'audio.mp3');
           
           if (transcription) {
             await ctx.reply(`📝 *Transcription:*\n\n${transcription}`);
-            if (shouldReact()) await ctx.react('✅');
+            await reactIfEnabled(ctx, '✅');
           } else {
             await ctx.reply('Could not transcribe audio.');
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
           }
         } catch (error) {
-          console.error('STT error:', error);
+          pluginLogger.error({ error }, 'STT failed');
           await ctx.reply('Failed to transcribe audio. ' + (error.message || ''));
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
         }
       }
     },
@@ -181,7 +184,7 @@ export default {
             question = 'What do you see in this image? Please describe it in detail.';
           }
 
-          if (shouldReact()) await ctx.react('👁️');
+          await reactIfEnabled(ctx, '👁️');
           
           const buffer = await ctx._adapter.downloadMedia({ raw: message.raw || message });
           
@@ -215,17 +218,18 @@ export default {
           
           if (response) {
             await ctx.reply(`👁️ *Vision Analysis:*\n\n${response}`);
-            if (shouldReact()) await ctx.react('✅');
+            await reactIfEnabled(ctx, '✅');
           } else {
             await ctx.reply('❌ Failed to analyze image.');
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
           }
         } catch (error) {
-          console.error('Vision error:', error);
+          pluginLogger.error({ error }, 'Vision command failed');
           await ctx.reply('❌ Error processing vision request: ' + (error.message || ''));
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
         }
       }
     }
   ]
 };
+

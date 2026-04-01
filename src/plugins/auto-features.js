@@ -14,7 +14,7 @@ export default {
   name: 'auto-features',
   description: 'Automated bot interactions (Typing, Online, React, Read)',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
 
   async onMessage(ctx) {
     const settings = getAutoFeatureSettings();
@@ -130,3 +130,4 @@ export default {
     }
   ]
 };
+

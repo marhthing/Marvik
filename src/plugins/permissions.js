@@ -1,10 +1,19 @@
-import { readStorage, writeStorage } from '../utils/storageStore.js';
+import {
+  allowCommandForJid,
+  denyCommandForJid,
+  getAllowedCommandsMap,
+  isCommandAllowedForJid,
+  migrateLegacyPermissionsStorage
+} from '../state/permissions.js';
 
 export default {
   name: 'permissions',
   description: 'Manage per-user command permissions',
-  version: '1.0.0',
-  author: 'MATDEV',
+  version: '1.1.0',
+  author: 'Are Martins',
+  async onLoad() {
+    migrateLegacyPermissionsStorage();
+  },
   commands: [
     {
       name: 'allow',
@@ -16,19 +25,15 @@ export default {
       ownerOnly: true,
       adminOnly: false,
       async execute(ctx) {
-        // In both private and group chats, just use chatId as the JID to allow
         const [cmd] = ctx.args;
         const jid = ctx.chatId;
         if (!cmd || !jid) {
           return ctx.reply('Usage: .allow <cmd>');
         }
-        const storage = readStorage();
-        storage.allowedCommands = storage.allowedCommands || {};
-        storage.allowedCommands[cmd] = storage.allowedCommands[cmd] || [];
-        if (!storage.allowedCommands[cmd].includes(jid)) {
-          storage.allowedCommands[cmd].push(jid);
-          writeStorage(storage);
-          ctx.reply(`✅ Allowed ${cmd} command`);
+
+        if (!isCommandAllowedForJid(cmd, jid)) {
+          allowCommandForJid(cmd, jid);
+          ctx.reply(`Allowed ${cmd} command`);
         } else {
           ctx.reply(`${cmd} command is already allowed`);
         }
@@ -45,19 +50,15 @@ export default {
       ownerOnly: true,
       adminOnly: false,
       async execute(ctx) {
-        // In both private and group chats, just use chatId as the JID to remove
         const [cmd] = ctx.args;
         const jid = ctx.chatId;
         if (!cmd || !jid) {
           return ctx.reply('Usage: .deny <cmd>');
         }
-        const storage = readStorage();
-        storage.allowedCommands = storage.allowedCommands || {};
-        storage.allowedCommands[cmd] = storage.allowedCommands[cmd] || [];
-        if (storage.allowedCommands[cmd].includes(jid)) {
-          storage.allowedCommands[cmd] = storage.allowedCommands[cmd].filter(j => j !== jid);
-          writeStorage(storage);
-          ctx.reply(`❌ Removed ${cmd} command`);
+
+        if (isCommandAllowedForJid(cmd, jid)) {
+          denyCommandForJid(cmd, jid);
+          ctx.reply(`Removed ${cmd} command`);
         } else {
           ctx.reply(`${cmd} command was not allowed`);
         }
@@ -73,20 +74,23 @@ export default {
       ownerOnly: true,
       adminOnly: false,
       async execute(ctx) {
-        const storage = readStorage();
-        const allowed = storage.allowedCommands || {};
-        // Show only allowed commands for the current user or group
+        const allowed = getAllowedCommandsMap();
         const myJid = ctx.chatId;
         const allowedCmds = Object.entries(allowed)
-          .filter(([cmd, jids]) => Array.isArray(jids) && jids.includes(myJid))
+          .filter(([, jids]) => Array.isArray(jids) && jids.includes(myJid))
           .map(([cmd]) => cmd);
-        if (!allowedCmds.length) return ctx.reply('No allowed commands set for this chat.');
+
+        if (!allowedCmds.length) {
+          return ctx.reply('No allowed commands set for this chat.');
+        }
+
         let msg = '*Allowed commands:*\n';
         for (const cmd of allowedCmds) {
-          msg += `• ${cmd}\n`;
+          msg += `- ${cmd}\n`;
         }
         ctx.reply(msg);
       }
     }
   ]
 };
+

@@ -2,6 +2,8 @@
  * Unified message context that all plugins receive
  * Platform-agnostic interface for interacting with messages
  */
+import logger from '../utils/logger.js';
+
 export default class MessageContext {
   constructor(data, adapter) {
     // Core identification
@@ -40,7 +42,7 @@ export default class MessageContext {
       if (adapter && adapter.logger) {
         adapter.logger.debug(...args);
       } else {
-        console.debug(...args);
+        logger.debug({ args }, 'Message context debug');
       }
     };
   }

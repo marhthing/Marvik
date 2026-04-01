@@ -4,19 +4,51 @@ import fs from 'fs-extra';
 import path from 'path';
 import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendVideoFile } from '../utils/downloadFlow.js';
+import {
+  attemptChoiceWithFallback,
+  formatFileSize,
+  promptNumericSelection,
+  reactPendingOrigin,
+  sendVideoFile,
+  validateVideoFile,
+  withDelayedNotice
+} from '../utils/downloadFlow.js';
+import logger from '../utils/logger.js';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
-const DEFAULT_VIDEO_FORMAT = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[vcodec!=none][acodec!=none]/best';
-const SHORTS_VIDEO_FORMAT = 'best';
-const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*[height<=720]+bestaudio/best[height<=720]/best';
+const MAX_VIDEO_HEIGHT = 480;
+const DEFAULT_VIDEO_FORMAT = `bestvideo[height<=${MAX_VIDEO_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${MAX_VIDEO_HEIGHT}][vcodec!=none][acodec!=none]/best[height<=${MAX_VIDEO_HEIGHT}]`;
+const SHORTS_VIDEO_FORMAT = `best[height<=${MAX_VIDEO_HEIGHT}]/best`;
+const FALLBACK_MERGE_VIDEO_FORMAT = `bestvideo*[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]/best`;
 const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=mweb,ios;formats=missing_pot';
+let youtubeTaskQueue = Promise.resolve();
+let youtubeQueueDepth = 0;
+const pluginLogger = logger.child({ component: 'youtube' });
+
+async function runExclusiveYouTubeTask(task) {
+  const previousTask = youtubeTaskQueue.catch(() => {});
+  const hadQueueAhead = youtubeQueueDepth > 0;
+  youtubeQueueDepth += 1;
+
+  let releaseQueue;
+  youtubeTaskQueue = new Promise((resolve) => {
+    releaseQueue = resolve;
+  });
+
+  try {
+    await previousTask;
+    return await task({ queued: hadQueueAhead });
+  } finally {
+    youtubeQueueDepth = Math.max(0, youtubeQueueDepth - 1);
+    releaseQueue();
+  }
+}
 
 function resolveCookiesConfig() {
   const inlineCookies = process.env.YOUTUBE_COOKIES?.trim();
@@ -97,13 +129,10 @@ function getDownloadOptions(extra = {}) {
   try {
     if (typeof youtubedl.update === 'function' && YTDLP_BINARY_PATH) {
       await youtubedl.update(YTDLP_BINARY_PATH);
-      console.log(`[youtube] Updated bundled yt-dlp binary at ${YTDLP_BINARY_PATH}`);
+      pluginLogger.info({ path: YTDLP_BINARY_PATH }, 'Updated bundled yt-dlp binary');
     }
   } catch (error) {
-    console.error('[youtube] Failed to update bundled yt-dlp binary', {
-      path: YTDLP_BINARY_PATH,
-      message: error?.message || String(error)
-    });
+    pluginLogger.warn({ error, path: YTDLP_BINARY_PATH }, 'Failed to update bundled yt-dlp binary');
   }
 
   try {
@@ -112,7 +141,7 @@ function getDownloadOptions(extra = {}) {
     } else {
       await execAsync('yt-dlp -U 2>/dev/null || pip install --upgrade yt-dlp 2>/dev/null || true');
     }
-    console.log('[youtube] yt-dlp self-update completed');
+    pluginLogger.debug('yt-dlp self-update completed');
   } catch {}
 })();
 
@@ -121,12 +150,9 @@ function getDownloadOptions(extra = {}) {
   try {
     await fs.ensureDir(path.dirname(YOUTUBE_COOKIES_CONFIG.path));
     await fs.writeFile(YOUTUBE_COOKIES_CONFIG.path, YOUTUBE_COOKIES_CONFIG.content, 'utf8');
-    console.log(`[youtube] Wrote inline cookies to ${YOUTUBE_COOKIES_CONFIG.path}`);
+    pluginLogger.debug({ path: YOUTUBE_COOKIES_CONFIG.path }, 'Wrote inline cookies file');
   } catch (error) {
-    console.error('[youtube] Failed to write inline cookies file', {
-      path: YOUTUBE_COOKIES_CONFIG.path,
-      message: error?.message || String(error)
-    });
+    pluginLogger.error({ error, path: YOUTUBE_COOKIES_CONFIG.path }, 'Failed to write inline cookies file');
   }
 })();
 
@@ -144,10 +170,7 @@ async function prepareCookiesFile() {
     const exists = await fs.pathExists(YTDLP_COOKIES_FILE);
     return { enabled: true, exists, source: 'file', path: YTDLP_COOKIES_FILE };
   } catch (error) {
-    console.error('[youtube] prepareCookiesFile failed', {
-      path: YTDLP_COOKIES_FILE,
-      message: error?.message || String(error)
-    });
+    pluginLogger.error({ error, path: YTDLP_COOKIES_FILE }, 'prepareCookiesFile failed');
     return { enabled: true, exists: false, source: YOUTUBE_COOKIES_CONFIG.source, path: YTDLP_COOKIES_FILE, error };
   }
 }
@@ -191,6 +214,12 @@ function generateUniqueFilename(prefix = 'yt', extension = 'mp4') {
   const timestamp = Date.now();
   const random = Math.random().toString(36).substring(2, 8);
   return `${prefix}_${timestamp}_${random}.${extension}`;
+}
+
+function generateUniqueBasename(prefix = 'yt') {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substring(2, 8);
+  return `${prefix}_${timestamp}_${random}`;
 }
 
 function validateYouTubeUrl(url) {
@@ -283,6 +312,54 @@ function buildProgressiveSelector(height, ext) {
   return `${progressiveBase}/best[ext=${ext}]/best`;
 }
 
+function inferMergeOutputFormat(formatString) {
+  const value = String(formatString || '').toLowerCase();
+  if (!value) return null;
+  if (value.includes('ext=mp4') || value.includes('mp4a') || value.includes('[ext=m4a]')) return 'mp4';
+  if (value.includes('ext=webm') || value.includes('acodec=opus') || value.includes('[ext=webm]')) return 'webm';
+  return null;
+}
+
+function getVideoMimetypeForFile(filePath) {
+  const ext = path.extname(filePath || '').toLowerCase();
+  if (ext === '.webm') return 'video/webm';
+  if (ext === '.mp4' || ext === '.m4v') return 'video/mp4';
+  if (ext === '.mov') return 'video/quicktime';
+  if (ext === '.mkv') return 'video/x-matroska';
+  return 'video/mp4';
+}
+
+function isCompletedDownloadFilename(filename, baseName) {
+  if (!filename || !baseName) return false;
+  if (!filename.startsWith(`${baseName}.`)) return false;
+  if (filename.endsWith('.part') || filename.endsWith('.ytdl')) return false;
+  if (filename.includes('.temp.')) return false;
+  if (filename.includes('.f') && /\.(f\d+|f\d+-\d+)\./i.test(filename)) return false;
+  return true;
+}
+
+async function resolveDownloadedOutputPath(tempDir, baseName) {
+  const entries = await fs.readdir(tempDir).catch(() => []);
+  const matches = entries
+    .filter((filename) => isCompletedDownloadFilename(filename, baseName))
+    .sort((a, b) => a.length - b.length);
+
+  if (!matches.length) {
+    throw new Error('Download failed: file not created');
+  }
+
+  return path.join(tempDir, matches[0]);
+}
+
+async function cleanupDownloadOutputs(tempDir, baseName) {
+  const entries = await fs.readdir(tempDir).catch(() => []);
+  await Promise.all(
+    entries
+      .filter((filename) => filename.startsWith(`${baseName}.`))
+      .map((filename) => fs.unlink(path.join(tempDir, filename)).catch(() => {}))
+  );
+}
+
 function buildYtDlpCliArgs(url, extraArgs = []) {
   const args = [
     '--no-warnings',
@@ -345,7 +422,7 @@ async function getVideoFormatsFromList(url) {
       if (!/video only|mp4a|audio/i.test(details) && !/\d{2,5}x\d{2,5}|\d{3,4}p/i.test(details)) continue;
 
       const height = parseHeightFromFormatText(details);
-      if (!height || height > 1080) continue;
+      if (!height || height > MAX_VIDEO_HEIGHT) continue;
 
       rawFormats.push({
         format_id: formatId,
@@ -364,12 +441,7 @@ async function getVideoFormatsFromList(url) {
       formats: rawFormats
     };
   } catch (error) {
-    console.error('[youtube] getVideoFormatsFromList failed', {
-      url,
-      message: error?.message || String(error),
-      stderr: error?.stderr || null,
-      stdout: error?.stdout || null
-    });
+    pluginLogger.error({ error, url, stderr: error?.stderr || null, stdout: error?.stdout || null }, 'getVideoFormatsFromList failed');
     throw error;
   }
 }
@@ -390,12 +462,7 @@ async function getVideoFormats(url) {
       break;
     } catch (error) {
       lastError = error;
-      console.error('[youtube] getVideoFormats metadata attempt failed', {
-        url,
-        attempt,
-        message: error?.message || String(error),
-        stderr: error?.stderr || null
-      });
+      pluginLogger.warn({ error, url, attempt, stderr: error?.stderr || null }, 'getVideoFormats metadata attempt failed');
     }
   }
 
@@ -413,9 +480,9 @@ async function getVideoFormats(url) {
     const height = format.height || 0;
     const hasVideo = format.vcodec && format.vcodec !== 'none';
     const formatId = format.format_id;
-    if (!hasVideo || !height || !formatId || height > 1080) continue;
+    if (!hasVideo || !height || !formatId || height > MAX_VIDEO_HEIGHT) continue;
 
-    const normalizedHeight = [2160, 1440, 1080, 720, 480, 360, 240, 144]
+    const normalizedHeight = [480, 360, 240, 144]
       .find(item => height >= item) || height;
 
     const entry = groupedFormats.get(normalizedHeight) || [];
@@ -484,17 +551,21 @@ async function getVideoFormats(url) {
 
 async function downloadVideoWithFormat(url, formatString, tempDir) {
   url = normalizeYouTubeUrl(url);
-  const outputPath = path.join(tempDir, generateUniqueFilename('yt_video', 'mp4'));
+  const outputBase = generateUniqueBasename('yt_video');
+  const outputTemplate = path.join(tempDir, `${outputBase}.%(ext)s`);
+  const mergeOutputFormat = inferMergeOutputFormat(formatString);
   try {
-    await youtubedl(url, getDownloadOptions({
-      output: outputPath,
-      format: formatString,
-      mergeOutputFormat: 'mp4'
-    }));
-
-    if (!(await fs.pathExists(outputPath))) {
-      throw new Error('Download failed: file not created');
+    const downloadOptions = getDownloadOptions({
+      output: outputTemplate,
+      format: formatString
+    });
+    if (mergeOutputFormat) {
+      downloadOptions.mergeOutputFormat = mergeOutputFormat;
     }
+
+    await youtubedl(url, downloadOptions);
+
+    const outputPath = await resolveDownloadedOutputPath(tempDir, outputBase);
 
     const stats = await fs.stat(outputPath);
     if (stats.size > VIDEO_SIZE_LIMIT) {
@@ -502,19 +573,15 @@ async function downloadVideoWithFormat(url, formatString, tempDir) {
       throw new Error(`Video too large (${stats.size} bytes). WhatsApp limit is 2GB.`);
     }
 
-    return { path: outputPath, size: stats.size };
+    const size = await validateVideoFile(outputPath, { minSize: 1000 });
+    return {
+      path: outputPath,
+      size,
+      mimetype: getVideoMimetypeForFile(outputPath)
+    };
   } catch (error) {
-    console.error('[youtube] downloadVideoWithFormat failed', {
-      url,
-      formatString,
-      outputPath,
-      message: error?.message || String(error),
-      stderr: error?.stderr || null,
-      stdout: error?.stdout || null
-    });
-    if (await fs.pathExists(outputPath)) {
-      await fs.unlink(outputPath).catch(() => {});
-    }
+    pluginLogger.error({ error, url, formatString, outputTemplate, stderr: error?.stderr || null, stdout: error?.stdout || null }, 'downloadVideoWithFormat failed');
+    await cleanupDownloadOutputs(tempDir, outputBase);
     throw error;
   }
 }
@@ -540,14 +607,14 @@ async function downloadVideoWithFallback(url, tempDir) {
   const attempts = isYouTubeShort(url)
     ? [
         SHORTS_VIDEO_FORMAT,
-        'best',
-        'bestvideo+bestaudio/best'
+        `best[height<=${MAX_VIDEO_HEIGHT}]`,
+        `bestvideo*[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]`
       ]
     : [
         DEFAULT_VIDEO_FORMAT,
-        'best[ext=mp4]/best',
+        `best[height<=${MAX_VIDEO_HEIGHT}][ext=mp4]/best[height<=${MAX_VIDEO_HEIGHT}]/best`,
         FALLBACK_MERGE_VIDEO_FORMAT,
-        'bestvideo*+bestaudio/best'
+        `bestvideo*[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]`
       ];
 
   let lastError = null;
@@ -556,11 +623,7 @@ async function downloadVideoWithFallback(url, tempDir) {
       const result = await downloadVideoWithFormat(url, formatString, tempDir);
       return { ...result, formatString };
     } catch (error) {
-      console.error('[youtube] fallback attempt failed', {
-        url,
-        formatString,
-        message: error?.message || String(error)
-      });
+      pluginLogger.warn({ error, url, formatString }, 'Fallback attempt failed');
       lastError = error;
     }
   }
@@ -592,13 +655,7 @@ async function downloadAudioWithYtDlp(url, tempDir) {
 
     return { path: outputPath, size: stats.size, title: info.title || 'audio' };
   } catch (error) {
-    console.error('[youtube] downloadAudioWithYtDlp failed', {
-      url,
-      outputPath,
-      message: error?.message || String(error),
-      stderr: error?.stderr || null,
-      stdout: error?.stdout || null
-    });
+    pluginLogger.error({ error, url, outputPath, stderr: error?.stderr || null, stdout: error?.stdout || null }, 'downloadAudioWithYtDlp failed');
     if (await fs.pathExists(outputPath)) {
       await fs.unlink(outputPath).catch(() => {});
     }
@@ -617,6 +674,7 @@ async function deliverYouTubeVideo(ctx, url, tempDir, title, formatString = null
       sizeLimit: VIDEO_SIZE_LIMIT,
       mediaLimit: VIDEO_MEDIA_LIMIT,
       limitLabel: '2GB',
+      mimetype: result.mimetype || 'video/mp4',
       caption: title || 'YouTube video'
     });
   } finally {
@@ -628,7 +686,7 @@ export default {
   name: 'youtube',
   description: 'YouTube video and audio downloader',
   version: '2.5.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'ytv',
@@ -662,30 +720,42 @@ export default {
 
           const cookiesState = await prepareCookiesFile();
           if (cookiesState.enabled && !cookiesState.exists) {
-            console.error('[youtube] cookies file missing', cookiesState);
+            pluginLogger.warn({ cookiesState }, 'Configured cookies file is missing');
             await ctx.reply(getMissingCookiesFileHelp(cookiesState.path));
             return;
           }
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           try {
-            const { title, duration, formats } = await getVideoFormats(validatedUrl.url);
+            await withDelayedNotice(ctx, () => runExclusiveYouTubeTask(async ({ queued }) => {
+              if (queued) {
+                await ctx.reply('Another YouTube download is in progress. Your request is queued.');
+              }
+
+              const { title, duration, formats } = await getVideoFormats(validatedUrl.url);
 
             if (formats.length === 0) {
               await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title);
-              if (shouldReact()) await ctx.react('✅');
+              await reactIfEnabled(ctx, '✅');
               return;
             }
 
             const choices = formats.map((format, index) => ({
               label: `${index + 1} - ${format.quality}${format.size ? ` (${formatFileSize(format.size)})` : ''}`,
-              formatString: format.formatSelectors
+              formatString: format.formatSelectors,
+              height: format.height
             }));
+
+            if (choices.length === 0) {
+              await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title);
+              await reactIfEnabled(ctx, '✅');
+              return;
+            }
 
             if (choices.length === 1) {
               await deliverYouTubeVideo(ctx, validatedUrl.url, tempDir, title, choices[0].formatString);
-              if (shouldReact()) await ctx.react('✅');
+              await reactIfEnabled(ctx, '✅');
               return;
             }
 
@@ -700,32 +770,52 @@ export default {
               choices,
               data: { url: validatedUrl.url, tempDir, title },
               handler: async (replyCtx, selected, choice, pending) => {
-                if (shouldReact()) await replyCtx.react('⏳');
+                await reactIfEnabled(replyCtx, '⏳');
                 try {
-                  await deliverYouTubeVideo(replyCtx, pending.data.url, pending.data.tempDir, pending.data.title, selected.formatString);
-                  if (shouldReact()) await replyCtx.react('✅');
+                  await withDelayedNotice(replyCtx, () => runExclusiveYouTubeTask(async ({ queued: selectionQueued }) => {
+                    if (selectionQueued) {
+                      await replyCtx.reply('Another YouTube download is in progress. Your selection is queued.');
+                    }
+
+                    await attemptChoiceWithFallback({
+                      choices: pending.data.choices,
+                      selectedIndex: choice - 1,
+                      attempt: async (fallbackChoice) => {
+                        await deliverYouTubeVideo(
+                          replyCtx,
+                          pending.data.url,
+                          pending.data.tempDir,
+                          pending.data.title,
+                          fallbackChoice.formatString
+                        );
+                      }
+                    });
+                  }));
+                  await reactIfEnabled(replyCtx, '✅');
+                  await reactPendingOrigin(replyCtx, pending, '✅');
                 } catch (error) {
-                  if (shouldReact()) await replyCtx.react('❌');
-                  const errorMsg = error.message?.includes('too large')
+                  await reactIfEnabled(replyCtx, '❌');
+                  await reactPendingOrigin(replyCtx, pending, '❌');
+                  const errorMsg = error.message?.includes('too large') || error.message?.includes('All quality options failed')
                     ? error.message
-                    : 'Failed to download selected quality.';
+                    : 'Failed to download all available qualities.';
                   await replyCtx.reply(errorMsg);
                 }
                 return true;
               }
             });
+            }));
           } catch (error) {
-            console.error('[youtube] .ytv execute failed', {
+            pluginLogger.error({
+              error,
               url: validatedUrl.url,
               chatId: ctx.chatId,
               senderId: ctx.senderId,
               isFromMe: ctx.isFromMe,
-              message: error?.message || String(error),
               stderr: error?.stderr || null,
-              stdout: error?.stdout || null,
-              stack: error?.stack || null
-            });
-            if (shouldReact()) await ctx.react('❌');
+              stdout: error?.stdout || null
+            }, '.ytv execution failed');
+            await reactIfEnabled(ctx, '❌');
             let errorMsg = 'Download failed. ';
             if (error.message?.includes('private')) {
               errorMsg += 'Video is private or unavailable.';
@@ -745,7 +835,7 @@ export default {
             await ctx.reply(errorMsg);
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while processing the video');
         }
       }
@@ -782,34 +872,39 @@ export default {
 
           const cookiesState = await prepareCookiesFile();
           if (cookiesState.enabled && !cookiesState.exists) {
-            console.error('[youtube] cookies file missing', cookiesState);
+            pluginLogger.warn({ cookiesState }, 'Configured cookies file is missing');
             await ctx.reply(getMissingCookiesFileHelp(cookiesState.path));
             return;
           }
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           try {
-            const result = await downloadAudioWithYtDlp(validatedUrl.url, tempDir);
+            await withDelayedNotice(ctx, () => runExclusiveYouTubeTask(async ({ queued }) => {
+              if (queued) {
+                await ctx.reply('Another YouTube download is in progress. Your request is queued.');
+              }
+
+              const result = await downloadAudioWithYtDlp(validatedUrl.url, tempDir);
             const audioBuffer = await fs.readFile(result.path);
             await ctx._adapter.sendMedia(ctx.chatId, audioBuffer, {
               type: 'audio',
               mimetype: 'audio/mp4'
             });
-            if (shouldReact()) await ctx.react('✅');
+            await reactIfEnabled(ctx, '✅');
             await fs.unlink(result.path).catch(() => {});
+            }));
           } catch (error) {
-            console.error('[youtube] .yta execute failed', {
+            pluginLogger.error({
+              error,
               url: validatedUrl.url,
               chatId: ctx.chatId,
               senderId: ctx.senderId,
               isFromMe: ctx.isFromMe,
-              message: error?.message || String(error),
               stderr: error?.stderr || null,
-              stdout: error?.stdout || null,
-              stack: error?.stack || null
-            });
-            if (shouldReact()) await ctx.react('❌');
+              stdout: error?.stdout || null
+            }, '.yta execution failed');
+            await reactIfEnabled(ctx, '❌');
             if (error.message?.includes('Sign in to confirm') || error.message?.includes("you're not a bot")) {
               await ctx.reply(
                 YTDLP_COOKIES_FILE
@@ -821,7 +916,7 @@ export default {
             await ctx.reply(`Failed to download audio: ${error.message}`);
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while processing the audio');
         }
       }
@@ -843,7 +938,7 @@ export default {
             return await ctx.reply('Please provide a search term\n\nUsage: .yts <search term>');
           }
 
-          if (shouldReact()) await ctx.react('🔍');
+          await reactIfEnabled(ctx, '🔍');
 
           try {
             const results = await youtubedl(`ytsearch5:${query}`, {
@@ -853,7 +948,7 @@ export default {
             });
 
             if (!results?.entries?.length) {
-              if (shouldReact()) await ctx.react('❌');
+              await reactIfEnabled(ctx, '❌');
               return await ctx.reply('No videos found for your search');
             }
 
@@ -871,14 +966,15 @@ export default {
             resultText += 'Use .yta <url> to download audio';
             await ctx.reply(resultText);
           } catch {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             await ctx.reply('Search failed. Please try again later.');
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while searching');
         }
       }
     }
   ]
 };
+

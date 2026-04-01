@@ -10,14 +10,14 @@ import {
   startScheduler,
   stopScheduler,
   writeSchedulerMedia
-} from '../utils/scheduler.js';
+} from '../state/scheduler.js';
 import {
-  findParticipant,
   getParticipantPhone,
   normalizeWhatsAppJid,
-  resolveParticipantFromContext
 } from '../utils/whatsappJid.js';
 import { getStatusRecipients } from '../utils/recipientUtils.js';
+import { getGroupActionContext, isGroupAdminParticipant } from '../domains/whatsapp/groupContext.js';
+import { addGroupParticipant, removeGroupParticipant } from '../domains/whatsapp/groupActions.js';
 
 function formatJobLine(job) {
   return `- ${job.id} | ${job.type} | ${formatScheduledTime(job.runAt)}`;
@@ -128,7 +128,7 @@ async function reAddTempKick(whatsapp, job) {
   let lastError = null;
   for (const candidate of candidates) {
     try {
-      await whatsapp.client.groupParticipantsUpdate(job.payload.groupJid, [candidate], 'add');
+      await addGroupParticipant(whatsapp.client, job.payload.groupJid, candidate);
       return;
     } catch (error) {
       lastError = error;
@@ -420,16 +420,11 @@ export default {
           return;
         }
 
-        const metadata = await ctx.platformAdapter.client.groupMetadata(ctx.chatId);
-        const botId = ctx.platformAdapter.client.user?.id || ctx.platformAdapter.client.user?.jid;
-        const botLid = ctx.platformAdapter.client.user?.lid;
-        const botParticipant = findParticipant(metadata.participants, botId, botLid);
-        if (!botParticipant?.admin) {
+        const { botParticipant, targetParticipant: target } = await getGroupActionContext(ctx, { resolveTarget: true });
+        if (!isGroupAdminParticipant(botParticipant)) {
           await ctx.reply('I need to be an admin to use tempkick.');
           return;
         }
-
-        const target = await resolveParticipantFromContext(ctx, metadata);
         if (!target) {
           await ctx.reply('User not found. Mention, reply, or pass the phone number.');
           return;
@@ -440,7 +435,7 @@ export default {
         }
 
         const phoneJid = normalizeWhatsAppJid(getParticipantPhone(target));
-        await ctx.platformAdapter.client.groupParticipantsUpdate(ctx.chatId, [target.id], 'remove');
+        await removeGroupParticipant(ctx.platformAdapter.client, ctx.chatId, target.id);
         const job = addJob({
           type: 'tempkick-readd',
           runAt,

@@ -1,8 +1,10 @@
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { extractMessageText, getMessageContextInfo } from '../utils/messageUtils.js';
 import { normalizeDigits, normalizeWhatsAppJid } from '../utils/whatsappJid.js';
+import logger from '../utils/logger.js';
 
 const SEND_TRIGGER_REGEX = /^(send|sed)$/i;
+const pluginLogger = logger.child({ component: 'send' });
 
 function isStatusRemoteJid(remoteJid = '') {
   return remoteJid === 'status@broadcast' || remoteJid.endsWith('@status') || remoteJid.endsWith('@broadcast');
@@ -54,7 +56,7 @@ export default {
   name: 'send',
   description: 'Send owner status to user when they reply with send',
   version: '2.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
 
   async onMessage(ctx) {
     if (ctx.platform !== 'whatsapp' || !ctx.text) return;
@@ -101,15 +103,15 @@ export default {
         await whatsappAdapter.client.sendMessage(ctx.chatId, { text: statusPayload.text });
       }
     } catch (error) {
-      console.error('[send.js] Failed to forward owner status', {
+      pluginLogger.error({
         chatId: ctx.chatId,
         senderId: ctx.senderId,
         messageId: ctx.messageId,
         statusId: statusPayload.stanzaId,
-        message: error?.message || String(error),
-        stack: error?.stack || null
-      });
+        error
+      }, 'Failed to forward owner status');
       await ctx.reply('Failed to send that status.');
     }
   }
 };
+

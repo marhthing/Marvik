@@ -1,14 +1,22 @@
 import youtubedl from 'youtube-dl-exec';
 import fs from 'fs-extra';
 import path from 'path';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendVideoFile } from '../utils/downloadFlow.js';
+import {
+  attemptChoiceWithFallback,
+  formatFileSize,
+  promptNumericSelection,
+  reactPendingOrigin,
+  sendVideoFile,
+  validateVideoFile,
+  withDelayedNotice
+} from '../utils/downloadFlow.js';
 
 const VIDEO_SIZE_LIMIT = 100 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 
-const PROXIES = (process.env.PROXIES || '').split(',').filter(p => p.trim());
+const PROXIES = (process.env.PROXIES || '').split(',').filter((proxy) => proxy.trim());
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -19,7 +27,9 @@ function getRandomProxy() {
   return PROXIES.length > 0 ? PROXIES[Math.floor(Math.random() * PROXIES.length)] : null;
 }
 
-const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
 
 function getDownloadOptions(extra = {}) {
   const proxy = getRandomProxy();
@@ -35,6 +45,7 @@ function getDownloadOptions(extra = {}) {
     ],
     ...extra
   };
+
   if (proxy) options.proxy = proxy;
   return options;
 }
@@ -50,7 +61,7 @@ function isValidFacebookUrl(url) {
     /(?:https?:\/\/)?(?:www\.|m\.|web\.|mobile\.)?(?:facebook|fb)\.(?:com|watch)\/(?:watch\/?\?v=|[\w.-]+\/videos\/|video\.php\?v=|.*?\/videos\/|reel\/|share\/[rv]\/)/i,
     /fb\.watch\/[\w-]+/i
   ];
-  return fbPatterns.some(pattern => pattern.test(url));
+  return fbPatterns.some((pattern) => pattern.test(url));
 }
 
 function extractFacebookUrlFromObject(obj) {
@@ -66,6 +77,7 @@ function extractFacebookUrlFromObject(obj) {
       if (found) return found;
     }
   }
+
   return null;
 }
 
@@ -77,29 +89,26 @@ async function getVideoFormatsWithYtDlp(url) {
     const formats = [];
     const seenQualities = new Set();
 
-    if (info.formats) {
-      for (const format of info.formats) {
-        if (!format.url && !format.fragments) continue;
-        if (!format.vcodec || format.vcodec === 'none') continue;
+    for (const format of info.formats || []) {
+      if (!format.url && !format.fragments) continue;
+      if (!format.vcodec || format.vcodec === 'none') continue;
 
-        const height = format.height || 0;
-        let quality = 'SD';
-        if (height >= 1080) quality = '1080p HD';
-        else if (height >= 720) quality = '720p HD';
-        else if (height >= 480) quality = '480p';
-        else if (height >= 360) quality = '360p';
+      const height = format.height || 0;
+      let quality = 'SD';
+      if (height >= 1080) quality = '1080p HD';
+      else if (height >= 720) quality = '720p HD';
+      else if (height >= 480) quality = '480p';
+      else if (height >= 360) quality = '360p';
 
-        if (seenQualities.has(quality)) continue;
+      if (seenQualities.has(quality)) continue;
 
-        seenQualities.add(quality);
-        const size = format.filesize || format.filesize_approx || 0;
-        formats.push({
-          quality,
-          height,
-          size,
-          formatString: height > 0 ? `best[height<=${height}][ext=mp4]/best[ext=mp4]/best` : 'best[ext=mp4]/best'
-        });
-      }
+      seenQualities.add(quality);
+      formats.push({
+        quality,
+        height,
+        size: format.filesize || format.filesize_approx || 0,
+        formatString: height > 0 ? `best[height<=${height}][ext=mp4]/best[ext=mp4]/best` : 'best[ext=mp4]/best'
+      });
     }
 
     formats.sort((a, b) => b.height - a.height);
@@ -127,13 +136,8 @@ async function downloadVideoWithYtDlp(url, formatString, tempDir) {
       throw new Error('Download failed: file not created');
     }
 
-    const stats = await fs.stat(outputPath);
-    if (stats.size < 1000) {
-      await fs.unlink(outputPath).catch(() => {});
-      throw new Error('Downloaded file is too small, likely invalid');
-    }
-
-    return { path: outputPath, size: stats.size };
+    const size = await validateVideoFile(outputPath, { minSize: 1000 });
+    return { path: outputPath, size };
   } catch (error) {
     if (await fs.pathExists(outputPath)) {
       await fs.unlink(outputPath).catch(() => {});
@@ -160,8 +164,8 @@ async function deliverFacebookVideo(ctx, url, formatString, tempDir) {
 export default {
   name: 'facebook',
   description: 'Facebook video downloader with quality selection',
-  version: '3.1.0',
-  author: 'MATDEV',
+  version: '3.2.0',
+  author: 'Are Martins',
   commands: [
     {
       name: 'fb',
@@ -195,25 +199,33 @@ export default {
           const tempDir = path.join(process.cwd(), 'tmp');
           await fs.ensureDir(tempDir);
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           try {
-            const videoData = await getVideoFormatsWithYtDlp(url);
+            const videoData = await withDelayedNotice(ctx, () => getVideoFormatsWithYtDlp(url));
 
             if (!videoData?.formats?.length) {
               await deliverFacebookVideo(ctx, url, 'best[ext=mp4]/best', tempDir);
-              if (shouldReact()) await ctx.react('✅');
+              await reactIfEnabled(ctx, '✅');
               return;
             }
 
             const qualities = videoData.formats.map((format, index) => ({
               label: `${index + 1} - ${format.quality}${format.size ? ` (${formatFileSize(format.size)})` : ''}`,
-              formatString: format.formatString
+              formatString: format.formatString,
+              quality: format.quality,
+              height: format.height
             }));
+
+            if (qualities.length === 0) {
+              await deliverFacebookVideo(ctx, url, 'best[ext=mp4]/best', tempDir);
+              await reactIfEnabled(ctx, '✅');
+              return;
+            }
 
             if (qualities.length === 1) {
               await deliverFacebookVideo(ctx, url, qualities[0].formatString, tempDir);
-              if (shouldReact()) await ctx.react('✅');
+              await reactIfEnabled(ctx, '✅');
               return;
             }
 
@@ -221,7 +233,7 @@ export default {
             prompt += `*Title:* ${videoData.title}\n`;
             if (videoData.duration) prompt += `*Duration:* ${videoData.duration}\n`;
             prompt += '\n*Select quality by replying with the number:*\n';
-            prompt += qualities.map(choice => choice.label).join('\n');
+            prompt += qualities.map((choice) => choice.label).join('\n');
 
             await promptNumericSelection(ctx, {
               type: 'facebook_quality',
@@ -229,30 +241,39 @@ export default {
               choices: qualities,
               data: { url, tempDir },
               handler: async (replyCtx, selected, choice, pending) => {
-                if (shouldReact()) await replyCtx.react('⏳');
+                await reactIfEnabled(replyCtx, '⏳');
 
                 try {
-                  await deliverFacebookVideo(replyCtx, pending.data.url, selected.formatString, pending.data.tempDir);
-                  if (shouldReact()) await replyCtx.react('✅');
+                  await withDelayedNotice(replyCtx, () => attemptChoiceWithFallback({
+                    choices: pending.data.choices,
+                    selectedIndex: choice - 1,
+                    attempt: async (fallbackChoice) => {
+                      await deliverFacebookVideo(replyCtx, pending.data.url, fallbackChoice.formatString, pending.data.tempDir);
+                    }
+                  }));
+                  await reactIfEnabled(replyCtx, '✅');
+                  await reactPendingOrigin(replyCtx, pending, '✅');
                 } catch (error) {
-                  if (shouldReact()) await replyCtx.react('❌');
-                  const message = error.message?.includes('Video too large')
+                  await reactIfEnabled(replyCtx, '❌');
+                  await reactPendingOrigin(replyCtx, pending, '❌');
+                  const message = error.message?.includes('Video too large') || error.message?.includes('All quality options failed')
                     ? error.message
-                    : 'Failed to download selected quality. Please try again.';
+                    : 'Failed to download all available qualities. Please try again.';
                   await replyCtx.reply(message);
                 }
                 return true;
               }
             });
           } catch {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             await ctx.reply('Could not download video. The video might be private, unavailable, or the link format is not supported.');
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while processing the Facebook video. Please try again.');
         }
       }
     }
   ]
 };
+

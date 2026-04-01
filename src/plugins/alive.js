@@ -12,7 +12,7 @@ export default {
   name: 'alive',
   description: 'Show how long the bot has been running',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'alive',
@@ -53,3 +53,4 @@ Uptime: ${uptime.trim()}`);
     }
   }
 };
+

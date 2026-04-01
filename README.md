@@ -1,23 +1,35 @@
-# MATDEV WhatsApp Bot
+# Marvik
 
-WhatsApp bot built on Baileys with a modular plugin system.
+WhatsApp bot built on Baileys with a modular plugin system, centralized state storage, and a plugin/runtime split that is meant to stay maintainable as the bot grows.
 
-![MATBOT Logo](./assets/matbot-logo.png)
+![Marvik Logo](./assets/marvik-logo.png)
 
-## Features
+## What This Bot Has
 
-- WhatsApp-first command and plugin architecture
-- Hot-reload for `.env` and plugin files
-- Modular command registry
-- Built-in rate limiting, permissions, and media helpers
-- Session persistence for Baileys multi-file auth
+- WhatsApp-first runtime built on `@whiskeysockets/baileys`
+- Modular plugin system in `src/plugins`
+- Centralized persistent state in `storage/storage.json`
+- Dedicated `state`, `domains`, `core`, `plugins`, and `utils` layers
+- Hot reload for `.env` and plugin files
+- Owner/admin/group permission handling
+- Media, AI, games, moderation, downloads, scheduling, and group tooling
 
-## Requirements
+## Ownership And Usage
 
-- Node.js 18+
-- A WhatsApp account for pairing
+This project is source-available and protected.
 
-## Setup
+- you may view the source
+- you may fork it on GitHub
+- you may contribute through pull requests
+
+You may not rebrand, redistribute, sublicense, sell, or present this project or modified versions of it as your own work without prior written permission.
+
+See:
+
+- [LICENSE](./LICENSE)
+- [NOTICE.md](./NOTICE.md)
+
+## Quick Start
 
 1. Install dependencies:
 
@@ -25,20 +37,20 @@ WhatsApp bot built on Baileys with a modular plugin system.
 npm install
 ```
 
-2. Create your env file:
+2. Create `.env` from the example:
 
 ```bash
 cp .env.example .env
 ```
 
-3. Configure `.env`:
+3. Edit `.env` with at least:
 
 ```env
-BOT_NAME=MATDEV
+BOT_NAME=Marvik
 PREFIX=.
-OWNER_NUMBER=1234567890
+OWNER_NUMBER=2347000000000
+BOT_LANG=en
 ENABLE_WHATSAPP=true
-LOG_LEVEL=info
 ```
 
 4. Start the bot:
@@ -47,80 +59,65 @@ LOG_LEVEL=info
 npm start
 ```
 
-## WhatsApp Pairing
-
-On first start, the bot will ask whether to pair with:
-
+5. Pair WhatsApp on first run:
 - QR code
-- 8-digit pairing code
+- or 8-digit pairing code
 
 Session data is stored in `session/whatsapp/`.
 
-## Plugin Basics
+## Using The Bot
 
-Plugins live in `src/plugins/` and export an object:
+- `.menu` shows grouped commands
+- `.help` lists commands
+- `.help <command>` shows usage for one command
 
-```js
-export default {
-  name: 'my-plugin',
-  commands: [
-    {
-      name: 'hello',
-      async execute(ctx) {
-        await ctx.reply('Hello');
-      }
-    }
-  ]
-};
-```
+Some commands are:
+- owner-only
+- admin-only
+- group-only
 
-## Message Context
+The command metadata is enforced by the runtime, not by manual checks inside each plugin.
 
-Plugins receive `ctx` with fields such as:
+`docs/COMMANDS.md` is generated from plugin metadata. After adding or changing commands, run `npm run docs:commands`.
 
-- `ctx.platform`
-- `ctx.text`
-- `ctx.command`
-- `ctx.args`
-- `ctx.senderId`
-- `ctx.senderName`
-- `ctx.chatId`
-- `ctx.isGroup`
-- `ctx.isOwner`
-- `ctx.isAdmin`
-- `ctx.media`
-- `ctx.quoted`
-- `ctx.mentions`
+## Documentation Index
 
-Common helpers:
+- [Architecture](./docs/ARCHITECTURE.md)
+- [Configuration](./docs/CONFIGURATION.md)
+- [Runtime Reference](./docs/RUNTIME_REFERENCE.md)
+- [Plugin Guide](./docs/PLUGIN_GUIDE.md)
+- [Commands Overview](./docs/COMMANDS.md)
+- [Quick Recipes](./docs/QUICK_RECIPES.md)
+- [Troubleshooting](./docs/TROUBLESHOOTING.md)
+- [Contributing](./CONTRIBUTING.md)
 
-- `await ctx.reply(text, options)`
-- `await ctx.send(text, options)`
-- `await ctx.react(emoji)`
-- `await ctx.delete()`
-- `await ctx.sendMedia(buffer, { type: 'image' })`
-- `await ctx.downloadMedia()`
-- `await ctx.presence('composing')`
-- `await ctx.read()`
-
-## Structure
+## Project Layout
 
 ```text
 src/
-  adapters/
-    BaseAdapter.js
-    WhatsAppAdapter.js
-  core/
-    Bot.js
-    CommandRegistry.js
-    MessageContext.js
-    PluginLoader.js
-  plugins/
-  utils/
+  adapters/            Platform adapters
+  config/              Runtime config/bootstrap defaults
+  core/                Bot lifecycle, loader, registry, context
+  domains/whatsapp/    WhatsApp-specific behavior
+  plugins/             Commands and message hooks
+  state/               Persistent state/domain storage
+  utils/               Generic helpers
+
+storage/
+  storage.json         Central bot state
+  messages/            Per-message archive for memory/antidelete flows
 ```
+
+## Notes
+
+- Runtime state is centered in `storage/storage.json`.
+- Message archives under `storage/messages/` are intentionally separate from `storage.json`.
+- Plugins are hot-reloaded when files under `src/plugins/` change.
+- `.env` is hot-reloaded too.
 
 ## Troubleshooting
 
-- If commands do not run, confirm `OWNER_NUMBER`, `PREFIX`, and plugin load logs.
 - If pairing fails repeatedly, clear `session/whatsapp/` and pair again.
-- If media commands fail, verify the quoted/original media is still available from WhatsApp.
+- If media commands fail, confirm the quoted/original media is still available from WhatsApp.
+- If AI commands fail, check `GROQ_API_KEY`.
+- If YouTube is blocked, configure cookies via `YOUTUBE_COOKIES` or `YOUTUBE_COOKIES_FILE`.

@@ -1,11 +1,21 @@
 import TiktokDL from '@tobyg74/tiktok-api-dl';
 import axios from 'axios';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendVideoBuffer } from '../utils/downloadFlow.js';
+import {
+  attemptChoiceWithFallback,
+  formatFileSize,
+  promptNumericSelection,
+  reactPendingOrigin,
+  sendVideoBuffer,
+  validateVideoBuffer,
+  withDelayedNotice
+} from '../utils/downloadFlow.js';
+import logger from '../utils/logger.js';
 
 const VIDEO_SIZE_LIMIT = 100 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
+const pluginLogger = logger.child({ component: 'tiktok' });
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -13,11 +23,14 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0'
 ];
 
-const getRandomUserAgent = () => USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
-const humanDelay = (min = 1000, max = 3000) => {
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function humanDelay(min = 1000, max = 3000) {
   const delay = Math.floor(Math.random() * (max - min + 1)) + min;
-  return new Promise(resolve => setTimeout(resolve, delay));
-};
+  return new Promise((resolve) => setTimeout(resolve, delay));
+}
 
 function isValidTikTokUrl(url) {
   const tiktokPatterns = [
@@ -27,7 +40,7 @@ function isValidTikTokUrl(url) {
     /tiktok\.com\/t\/[\w-]+/,
     /tiktok\.com\/v\/\d+/
   ];
-  return tiktokPatterns.some(pattern => pattern.test(url));
+  return tiktokPatterns.some((pattern) => pattern.test(url));
 }
 
 function extractTikTokUrlFromObject(obj) {
@@ -72,6 +85,7 @@ async function downloadMediaToBuffer(mediaUrl) {
 
 async function deliverTikTokVideo(ctx, url) {
   const videoBuffer = await downloadMediaToBuffer(url);
+  await validateVideoBuffer(videoBuffer);
   await sendVideoBuffer(ctx, videoBuffer, {
     sizeLimit: VIDEO_SIZE_LIMIT,
     mediaLimit: VIDEO_MEDIA_LIMIT,
@@ -82,9 +96,13 @@ async function deliverTikTokVideo(ctx, url) {
 
 function buildQualityOptions(videoData) {
   const qualities = [];
+  const seenUrls = new Set();
   let index = 1;
 
   const pushQuality = async (label, url) => {
+    if (!url || seenUrls.has(url)) return;
+    seenUrls.add(url);
+
     const size = await getFileSize(url);
     qualities.push({
       label: `${index} - ${label}${size ? ` (${formatFileSize(size)})` : ''}`,
@@ -131,8 +149,8 @@ function buildQualityOptions(videoData) {
 export default {
   name: 'tiktok',
   description: 'TikTok video downloader with quality selection',
-  version: '2.1.0',
-  author: 'MATDEV',
+  version: '2.2.0',
+  author: 'Are Martins',
   commands: [
     {
       name: 'tiktok',
@@ -163,66 +181,78 @@ export default {
             return await ctx.reply('Invalid TikTok URL. Please provide a valid TikTok video link.');
           }
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
           await humanDelay(800, 1500);
 
           let videoData = null;
-          for (const version of ['v2', 'v1', 'v3']) {
-            try {
-              await humanDelay(500, 1000);
-              const result = await TiktokDL.Downloader(url, { version });
-              if (result?.status === 'success' && result.result) {
-                videoData = result.result;
-                break;
-              }
-            } catch {}
-          }
+          await withDelayedNotice(ctx, async () => {
+            for (const version of ['v2', 'v1', 'v3']) {
+              try {
+                await humanDelay(500, 1000);
+                const result = await TiktokDL.Downloader(url, { version });
+                if (result?.status === 'success' && result.result) {
+                  videoData = result.result;
+                  break;
+                }
+              } catch {}
+            }
+          });
 
           if (!videoData) {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             return await ctx.reply('Failed to fetch TikTok video. Please try again later.');
           }
 
           const qualities = await buildQualityOptions(videoData);
+
           if (qualities.length === 0) {
-            if (shouldReact()) await ctx.react('❌');
-            return await ctx.reply('No downloadable video found.');
+            await reactIfEnabled(ctx, '❌');
+            return await ctx.reply('No working downloadable video quality was found.');
           }
 
           if (qualities.length === 1) {
             await deliverTikTokVideo(ctx, qualities[0].url);
-            if (shouldReact()) await ctx.react('✅');
+            await reactIfEnabled(ctx, '✅');
             return;
           }
 
           let prompt = 'Select video quality by replying with the number:\n';
-          prompt += qualities.map(choice => choice.label).join('\n');
+          prompt += qualities.map((choice) => choice.label).join('\n');
 
           await promptNumericSelection(ctx, {
             type: 'tiktok_quality',
             prompt,
             choices: qualities,
-            handler: async (replyCtx, selected) => {
-              if (shouldReact()) await replyCtx.react('⏳');
+            handler: async (replyCtx, selected, choice, pending) => {
+              await reactIfEnabled(replyCtx, '⏳');
               try {
-                await deliverTikTokVideo(replyCtx, selected.url);
-                if (shouldReact()) await replyCtx.react('✅');
+                await withDelayedNotice(replyCtx, () => attemptChoiceWithFallback({
+                  choices: pending.data.choices,
+                  selectedIndex: choice - 1,
+                  attempt: async (fallbackChoice) => {
+                    await deliverTikTokVideo(replyCtx, fallbackChoice.url);
+                  }
+                }));
+                await reactIfEnabled(replyCtx, '✅');
+                await reactPendingOrigin(replyCtx, pending, '✅');
               } catch (error) {
-                if (shouldReact()) await replyCtx.react('❌');
-                const message = error.message?.includes('Video too large')
+                await reactIfEnabled(replyCtx, '❌');
+                await reactPendingOrigin(replyCtx, pending, '❌');
+                const message = error.message?.includes('Video too large') || error.message?.includes('All quality options failed')
                   ? error.message
-                  : 'Failed to download selected quality.';
+                  : 'Failed to download all available qualities.';
                 await replyCtx.reply(message);
               }
               return true;
             }
           });
         } catch (error) {
-          console.error('TikTok error:', error);
-          if (shouldReact()) await ctx.react('❌');
-          await ctx.reply('An error occurred while processing the TikTok video. Please try again.\n' + (error && error.message ? error.message : error));
+          pluginLogger.error({ error }, 'TikTok command failed');
+          await reactIfEnabled(ctx, '❌');
+          await ctx.reply('An error occurred while processing the TikTok video. Please try again.\n' + (error?.message || error));
         }
       }
     }
   ]
 };
+

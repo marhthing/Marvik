@@ -1,4 +1,4 @@
-import { getStorageSection, setStorageSection } from './storageStore.js';
+import { getStorageSection, setStorageSection } from '../utils/storageStore.js';
 
 const CHATS_KEY = 'knownChats';
 const CONTACTS_KEY = 'knownContacts';

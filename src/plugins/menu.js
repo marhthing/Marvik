@@ -3,7 +3,7 @@ export default {
   name: 'menu',
   description: 'Show main menu and bot info',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'menu',
@@ -60,7 +60,7 @@ export default {
         }
         menuSection += '╰───────────────⊷';
         // Menu message
-        const msg = `═══ MATDEV ═══⊷\n` +
+        const msg = `═══ MARVIK ═══⊷\n` +
           `┃¶╭──────────────\n` +
           `┃¶│ Prefix : .\n` +
           `┃¶│ User : ${user}\n` +
@@ -80,3 +80,5 @@ export default {
     }
   ]
 };
+
+

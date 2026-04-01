@@ -2,6 +2,9 @@
 import fs from 'fs';
 import path from 'path';
 import { execSync } from 'child_process';
+import bootstrapLogger from './utils/bootstrapLogger.js';
+
+const bootLogger = bootstrapLogger.child('src-index');
 
 function ensureDependencies() {
   const nodeModulesPath = path.join(process.cwd(), 'node_modules');
@@ -23,21 +26,21 @@ function ensureDependencies() {
   }
   if (needInstall) {
     if (missingDeps.length > 0) {
-      console.log('Installing missing packages:', missingDeps.join(', '));
+      bootLogger.info(`Installing missing packages: ${missingDeps.join(', ')}`);
       try {
         execSync(`npm install ${missingDeps.join(' ')}`, { stdio: 'inherit' });
-        console.log('Missing packages installed.');
+        bootLogger.info('Missing packages installed.');
       } catch (e) {
-        console.error('Failed to install missing packages', e);
+        bootLogger.error('Failed to install missing packages', e);
         process.exit(1);
       }
     } else {
-      console.log('node_modules missing, running full npm install...');
+      bootLogger.info('node_modules missing, running full npm install...');
       try {
         execSync('npm install', { stdio: 'inherit' });
-        console.log('All packages installed.');
+        bootLogger.info('All packages installed.');
       } catch (e) {
-        console.error('Failed to install packages', e);
+        bootLogger.error('Failed to install packages', e);
         process.exit(1);
       }
     }
@@ -52,10 +55,11 @@ import logger from './utils/logger.js';
 import watchFilesAndFolders from './utils/watcher.js';
 import dotenv from 'dotenv';
 import envMemory from './utils/envMemory.js';
+import { recordLifecycleEvent } from './state/lifecycle.js';
 dotenv.config();
 
 /**
- * Main entry point for MATDEV Universal Bot
+ * Main entry point for Marvik
  */
 
 const bot = new Bot(config);
@@ -98,11 +102,12 @@ watchFilesAndFolders({
 // Handle graceful shutdown for Baileys session safety
 let isShuttingDown = false;
 
-function shutdownHandler(signal) {
+function shutdownHandler(signal, exitCode = 0) {
   if (isShuttingDown) return;
   isShuttingDown = true;
   logger.info(`Received ${signal}, shutting down gracefully...`);
-  bot.stop().then(() => process.exit(0)).catch(() => process.exit(1));
+  recordLifecycleEvent('shutdown_signal', { signal, exitCode });
+  bot.stop().then(() => process.exit(exitCode)).catch(() => process.exit(1));
 }
 
 process.on('SIGINT', () => shutdownHandler('SIGINT'));
@@ -111,7 +116,11 @@ process.on('SIGTERM', () => shutdownHandler('SIGTERM'));
 // Handle uncaught errors
 process.on('uncaughtException', (error) => {
   logger.error({ error }, 'Uncaught Exception');
-  process.exit(1);
+  recordLifecycleEvent('uncaught_exception', {
+    message: error?.message || String(error),
+    name: error?.name || 'Error'
+  });
+  shutdownHandler('uncaughtException', 1);
 });
 
 process.on('unhandledRejection', (reason, promise) => {
@@ -119,6 +128,7 @@ process.on('unhandledRejection', (reason, promise) => {
     ? { message: reason.message, stack: reason.stack, name: reason.name }
     : { reason: String(reason) };
   logger.error(errorDetails, 'Unhandled Rejection');
+  recordLifecycleEvent('unhandled_rejection', errorDetails);
 });
 
 // Start the bot
@@ -130,3 +140,4 @@ process.on('unhandledRejection', (reason, promise) => {
     process.exit(1);
   }
 })();
+

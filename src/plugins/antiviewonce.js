@@ -1,19 +1,65 @@
 import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { getOwnerJid, getQuotedContextInfo, getQuotedMessageObject } from '../utils/messageUtils.js';
-import { getStorageSection, patchStorageSection } from '../utils/storageStore.js';
-import { getViewOnceBackup, saveViewOnceBackup } from '../utils/viewOnceBackup.js';
-import { applyDestinationCommand, normalizeDestinationConfig, resolveDestinationJid as resolveDestinationJidShared } from '../utils/destinationRouter.js';
+import { getAntiviewonceConfig, setAntiviewonceConfig } from '../state/antiviewonce.js';
+import { getViewOnceBackup, saveViewOnceBackup } from '../state/viewOnceBackup.js';
+import { applyDestinationCommand, resolveDestinationJid as resolveDestinationJidShared } from '../utils/destinationRouter.js';
+import logger from '../utils/logger.js';
 
-function getAntiviewonceConfig() {
-  return normalizeDestinationConfig(getStorageSection('antiviewonce', { dest: 'owner', jid: null }));
-}
+const pluginLogger = logger.child({ component: 'antiviewonce' });
 
-function setAntiviewonceConfig(newConfig) {
-  return patchStorageSection('antiviewonce', newConfig, { dest: 'owner', jid: null });
+// TEMP DEBUG: remove after anti-view-once detection is verified.
+function logViewOnceDebug(stage, details = {}) {
+  console.log('[antiviewonce-debug]', stage, details);
 }
 
 function resolveDestinationJid(ctx) {
   return resolveDestinationJidShared(ctx, getAntiviewonceConfig(), getOwnerJid(ctx) || ctx.chatId);
+}
+
+function unwrapViewOnceMessage(message = {}) {
+  let current = message;
+
+  while (current?.ephemeralMessage?.message) {
+    current = current.ephemeralMessage.message;
+  }
+
+  const directViewOnce =
+    current?.viewOnceMessage?.message ||
+    current?.viewOnceMessageV2?.message ||
+    current?.viewOnceMessageV3?.message ||
+    current?.viewOnceMessageV2Extension?.message;
+
+  if (directViewOnce) {
+    return directViewOnce;
+  }
+
+  if (
+    current?.imageMessage?.viewOnce ||
+    current?.videoMessage?.viewOnce ||
+    current?.audioMessage?.viewOnce
+  ) {
+    return current;
+  }
+
+  return current || null;
+}
+
+function hasViewOnceWrapper(message = {}) {
+  let current = message;
+
+  while (current?.ephemeralMessage?.message) {
+    current = current.ephemeralMessage.message;
+  }
+
+  return Boolean(
+    current?.viewOnceMessage ||
+    current?.viewOnceMessageV2 ||
+    current?.viewOnceMessageV3 ||
+    current?.viewOnceMessageV2Extension ||
+    current?.imageMessage?.viewOnce ||
+    current?.videoMessage?.viewOnce ||
+    current?.audioMessage?.viewOnce
+  );
 }
 
 async function sendCapture(ctx, { buffer, mediaType, mimetype, caption = '' }) {
@@ -21,8 +67,7 @@ async function sendCapture(ctx, { buffer, mediaType, mimetype, caption = '' }) {
   const shouldCaption = typeof caption === 'string' && caption.trim().length > 0;
 
   if (ctx.platform === 'whatsapp' && ctx.platformAdapter && typeof ctx.platformAdapter.sendMedia === 'function') {
-    await ctx.platformAdapter.sendMedia(destJid, buffer, {
-      type: mediaType,
+    await ctx.platformAdapter.sendMedia(destJid, buffer, mediaType, {
       mimetype,
       ...(shouldCaption ? { caption: caption.trim() } : {})
     });
@@ -50,17 +95,7 @@ async function sendBackupCapture(ctx, backup, contextInfo = null) {
 
 async function extractAndSend(ctx, quotedContent, contextInfo) {
   try {
-    let viewOnceContent = null;
-
-    if (quotedContent.viewOnceMessageV2) {
-      viewOnceContent = quotedContent.viewOnceMessageV2.message;
-    } else if (quotedContent.viewOnceMessage) {
-      viewOnceContent = quotedContent.viewOnceMessage.message;
-    } else if (quotedContent.viewOnceMessageV3) {
-      viewOnceContent = quotedContent.viewOnceMessageV3.message;
-    } else if (quotedContent.imageMessage || quotedContent.videoMessage || quotedContent.audioMessage) {
-      viewOnceContent = quotedContent;
-    }
+    const viewOnceContent = unwrapViewOnceMessage(quotedContent);
 
     if (!viewOnceContent) {
       const backup = getViewOnceBackup(contextInfo?.stanzaId);
@@ -146,7 +181,7 @@ async function extractAndSend(ctx, quotedContent, contextInfo) {
       caption
     });
   } catch (error) {
-    console.error('[antiviewonce] Extract error:', error.message);
+    pluginLogger.error({ error }, 'Extract failed');
   }
 }
 
@@ -203,14 +238,14 @@ const AntiViewOncePlugin = {
 
           await extractAndSend(ctx, quotedMessage, contextInfo);
         } catch (error) {
-          console.error(`Error in .vv command: ${error.message}`);
+          pluginLogger.error({ error }, '.vv command failed');
           await ctx.reply('❌ Failed to extract view-once content.');
         }
       }
     }
   ],
   onLoad: async (bot) => {
-    console.log('✅ Anti-View Once plugin loaded');
+    pluginLogger.info('Plugin loaded');
     const adapter = bot.getAdapter('whatsapp');
     if (!adapter) return;
 
@@ -218,15 +253,38 @@ const AntiViewOncePlugin = {
       if (ctx.platform !== 'whatsapp') return;
 
       const msg = ctx.raw;
-      if (msg.message?.viewOnceMessage || msg.message?.viewOnceMessageV2 || msg.message?.viewOnceMessageV3) {
-        console.log('[antiviewonce] View-once detected, auto-capturing...');
+      logViewOnceDebug('message-received', {
+        chatId: ctx.chatId,
+        messageId: ctx.messageId,
+        hasViewOnceMessage: Boolean(msg?.message?.viewOnceMessage),
+        hasViewOnceMessageV2: Boolean(msg?.message?.viewOnceMessageV2),
+        hasViewOnceMessageV3: Boolean(msg?.message?.viewOnceMessageV3),
+        hasViewOnceMessageV2Extension: Boolean(msg?.message?.viewOnceMessageV2Extension),
+        hasEphemeralMessage: Boolean(msg?.message?.ephemeralMessage),
+        hasDirectImageViewOnce: Boolean(msg?.message?.imageMessage?.viewOnce),
+        hasDirectVideoViewOnce: Boolean(msg?.message?.videoMessage?.viewOnce),
+        hasDirectAudioViewOnce: Boolean(msg?.message?.audioMessage?.viewOnce),
+        detectedWrapper: hasViewOnceWrapper(msg?.message)
+      });
 
-        const quotedMessage = msg.message.viewOnceMessage?.message ||
-          msg.message.viewOnceMessageV2?.message ||
-          msg.message.viewOnceMessageV3?.message;
+      if (hasViewOnceWrapper(msg.message)) {
+        logViewOnceDebug('view-once-detected', {
+          chatId: ctx.chatId,
+          messageId: ctx.messageId
+        });
+        pluginLogger.debug({ chatId: ctx.chatId, messageId: ctx.messageId }, 'View-once detected');
+        const quotedMessage = unwrapViewOnceMessage(msg.message);
 
         if (quotedMessage) {
+          logViewOnceDebug('view-once-unwrapped', {
+            messageId: ctx.messageId,
+            keys: Object.keys(quotedMessage || {})
+          });
           await extractAndSend(ctx, quotedMessage, msg.messageContextInfo || msg.contextInfo);
+        } else {
+          logViewOnceDebug('view-once-unwrapped-empty', {
+            messageId: ctx.messageId
+          });
         }
       }
     });

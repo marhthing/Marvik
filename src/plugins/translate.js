@@ -1,10 +1,13 @@
 import axios from 'axios';
+import logger from '../utils/logger.js';
+
+const pluginLogger = logger.child({ component: 'translate' });
 
 export default {
   name: 'translate',
   description: 'Translate text between different languages',
   version: '1.0.1',
-  author: 'MATDEV',
+  author: 'Are Martins',
   
   // Helper method to get language code
   getLanguageCode(input) {
@@ -125,10 +128,11 @@ export default {
             return await ctx.reply(`❌ ${result.error}`);
           }
         } catch (error) {
-          console.error('Translate error:', error);
+          pluginLogger.error({ error }, 'Translate command failed');
           return await ctx.reply('❌ Translation error occurred.');
         }
       }
     }
   ]
 };
+

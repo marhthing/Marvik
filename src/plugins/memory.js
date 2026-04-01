@@ -44,7 +44,7 @@ export default {
   name: 'memory',
   description: 'Show current memory usage and system info',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'memory',

@@ -1,14 +1,9 @@
 import { buildForwardPayload, getOwnerJid } from '../utils/messageUtils.js';
-import { getStorageSection, patchStorageSection } from '../utils/storageStore.js';
-import { applyDestinationCommand, normalizeDestinationConfig, resolveDestinationJid } from '../utils/destinationRouter.js';
+import { getSaveConfig, setSaveConfig } from '../state/save.js';
+import { applyDestinationCommand, resolveDestinationJid } from '../utils/destinationRouter.js';
+import logger from '../utils/logger.js';
 
-function getSaveConfig() {
-  return normalizeDestinationConfig(getStorageSection('save', { dest: 'owner', jid: null }));
-}
-
-function setSaveConfig(newConfig) {
-  return patchStorageSection('save', newConfig, { dest: 'owner', jid: null });
-}
+const pluginLogger = logger.child({ component: 'save' });
 
 /**
  * Save Plugin
@@ -53,7 +48,7 @@ const SavePlugin = {
             forward: buildForwardPayload(ctx)
           });
         } catch (error) {
-          console.error(`Error in .save command: ${error.message}`);
+          pluginLogger.error({ error }, '.save command failed');
         }
       }
     }

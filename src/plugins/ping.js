@@ -2,7 +2,7 @@ export default {
   name: 'ping',
   description: 'Ping command plugin',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'ping',
@@ -34,3 +34,4 @@ export default {
     }
   ]
 };
+

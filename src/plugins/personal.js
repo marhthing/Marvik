@@ -5,12 +5,15 @@ import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import { getQuotedMediaTarget } from '../utils/quotedMedia.js';
 import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 import pendingActions from '../utils/pendingActions.js';
+import logger from '../utils/logger.js';
+
+const pluginLogger = logger.child({ component: 'personal' });
 
 export default {
   name: 'personal',
   description: 'Owner personal management commands',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'setpp',
@@ -106,7 +109,7 @@ export default {
             timeout: 2 * 60 * 1000
           });
         } catch (error) {
-          console.error(`Error in .clear command: ${error.message}`);
+          pluginLogger.error({ error }, '.clear command failed');
           await ctx.reply('? Failed to clear chat.');
         }
 
@@ -114,3 +117,4 @@ export default {
     }
   ]
 };
+

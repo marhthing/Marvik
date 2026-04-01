@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import envMemory from '../utils/envMemory.js';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedStickerTarget } from '../utils/quotedMedia.js';
 import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
@@ -9,7 +9,7 @@ export default {
   name: 'take',
   description: 'Change sticker pack name and author',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'take',
@@ -57,11 +57,11 @@ export default {
         }
         
         // Fetch from envMemory (in-memory .env), fallback to config, then hardcoded
-        const stickerPack = envMemory.get('STICKER_PACK') || config.stickerPack || 'MATDEV Bot';
+        const stickerPack = envMemory.get('STICKER_PACK') || config.stickerPack || 'Marvik';
         const stickerAuthor = envMemory.get('STICKER_AUTHOR') || config.stickerAuthor || 'Bot';
 
         // Send processing indicator
-        if (shouldReact()) await ctx.react('⏳');
+        await reactIfEnabled(ctx, '⏳');
 
         // Re-create sticker with new metadata
         try {
@@ -76,11 +76,11 @@ export default {
           const stickerBuffer = await sticker.toBuffer();
           
           // Remove processing indicator
-          if (shouldReact()) await ctx.react('✅');
+          await reactIfEnabled(ctx, '✅');
           
           await ctx._adapter.sendMedia(ctx.chatId, stickerBuffer, { type: 'sticker' });
         } catch (e) {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           // console.error('Create sticker error:', e);
           await ctx.reply('❌ Failed to update sticker metadata.');
         }
@@ -88,3 +88,4 @@ export default {
     }
   ]
 };
+

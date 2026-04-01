@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 dotenv.config();
 import envMemory from '../utils/envMemory.js';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedStickerTarget } from '../utils/quotedMedia.js';
 import { downloadMediaBuffer, hasValidMediaHeader } from '../utils/mediaDecode.js';
 
@@ -9,7 +9,7 @@ export default {
   name: 'stickerconvert',
   description: 'Convert stickers to image or video/gif',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
   commands: [
     {
       name: 'img',
@@ -41,10 +41,10 @@ export default {
         }
         try {
           const imgBuffer = await sharp(buffer).png().toBuffer();
-          if (shouldReact()) await ctx.react('✅');
+          await reactIfEnabled(ctx, '✅');
           await ctx._adapter.sendMedia(ctx.chatId, imgBuffer, { type: 'image' });
         } catch (e) {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('❌ Failed to convert sticker to image.');
         }
       }
@@ -126,10 +126,10 @@ export default {
               .on('error', (err) => reject(err));
           });
           const vidBuffer = await readFile(tmpOut);
-          if (shouldReact()) await ctx.react('✅');
+          await reactIfEnabled(ctx, '✅');
           await ctx._adapter.sendMedia(ctx.chatId, vidBuffer, { type: 'video' });
         } catch (e) {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply(`❌ Failed to convert sticker to video.\nError: ${e?.message || e}`);
         } finally {
           try { await unlink(tmpWebp); } catch {}
@@ -140,3 +140,4 @@ export default {
     }
   ]
 };
+

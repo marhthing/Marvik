@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { getStorageSection, setStorageSection } from './storageStore.js';
+import { getStorageSection, setStorageSection } from '../utils/storageStore.js';
 
 const STORAGE_KEY = 'scheduler';
 const MEDIA_DIR = path.resolve(process.cwd(), 'storage', 'scheduler_media');

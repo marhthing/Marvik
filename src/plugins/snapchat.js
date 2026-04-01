@@ -2,9 +2,17 @@ import youtubedl from 'youtube-dl-exec';
 import axios from 'axios';
 import fs from 'fs-extra';
 import path from 'path';
-import { shouldReact } from '../utils/pendingActions.js';
+import { reactIfEnabled } from '../utils/pendingActions.js';
 import { getQuotedMessageObject } from '../utils/messageUtils.js';
-import { formatFileSize, promptNumericSelection, sendVideoFile } from '../utils/downloadFlow.js';
+import {
+  attemptChoiceWithFallback,
+  formatFileSize,
+  promptNumericSelection,
+  reactPendingOrigin,
+  sendVideoFile,
+  validateVideoFile,
+  withDelayedNotice
+} from '../utils/downloadFlow.js';
 
 const VIDEO_SIZE_LIMIT = 100 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
@@ -76,8 +84,7 @@ function extractSnapchatUrlFromObject(obj) {
   return null;
 }
 
-async function downloadWithYtDlp(url, tempDir) {
-  const outputPath = path.join(tempDir, generateUniqueFilename('snap', 'mp4'));
+async function downloadWithYtDlp(url) {
   const info = await youtubedl(url, {
     dumpSingleJson: true,
     noWarnings: true,
@@ -85,51 +92,51 @@ async function downloadWithYtDlp(url, tempDir) {
   });
 
   const formats = [];
-  if (info.formats?.length) {
-    const seenQualities = new Set();
-    for (const format of info.formats) {
-      if (format.ext !== 'mp4' && format.vcodec === 'none') continue;
-      const height = format.height || 0;
-      let quality = 'Standard';
-      if (height >= 1080) quality = '1080p HD';
-      else if (height >= 720) quality = '720p HD';
-      else if (height >= 480) quality = '480p';
-      else if (height >= 360) quality = '360p';
-      else if (height > 0) quality = `${height}p`;
-      if (seenQualities.has(quality)) continue;
-      seenQualities.add(quality);
-      formats.push({
-        quality,
-        height,
-        formatId: format.format_id,
-        size: format.filesize || format.filesize_approx || 0
-      });
-    }
-    formats.sort((a, b) => b.height - a.height);
+  const seenQualities = new Set();
+  for (const format of info.formats || []) {
+    if (format.ext !== 'mp4' && format.vcodec === 'none') continue;
+    const height = format.height || 0;
+    let quality = 'Standard';
+    if (height >= 1080) quality = '1080p HD';
+    else if (height >= 720) quality = '720p HD';
+    else if (height >= 480) quality = '480p';
+    else if (height >= 360) quality = '360p';
+    else if (height > 0) quality = `${height}p`;
+
+    if (seenQualities.has(quality)) continue;
+    seenQualities.add(quality);
+    formats.push({
+      quality,
+      height,
+      formatId: format.format_id,
+      size: format.filesize || format.filesize_approx || 0
+    });
   }
+
+  formats.sort((a, b) => b.height - a.height);
 
   return {
     formats: formats.slice(0, 5),
     title: info.title || 'Snapchat Video',
-    outputPath,
     url
   };
 }
 
 async function downloadVideoWithFormat(url, formatId, outputPath) {
   try {
-    const options = {
+    await youtubedl(url, {
       output: outputPath,
       noWarnings: true,
       noCheckCertificates: true,
       format: formatId && formatId !== 'best' ? formatId : 'best[ext=mp4]/best'
-    };
-    await youtubedl(url, options);
+    });
+
     if (!(await fs.pathExists(outputPath))) {
       throw new Error('Download failed: file not created');
     }
-    const stats = await fs.stat(outputPath);
-    return { path: outputPath, size: stats.size };
+
+    const size = await validateVideoFile(outputPath, { minSize: 1000 });
+    return { path: outputPath, size };
   } catch (error) {
     if (await fs.pathExists(outputPath)) {
       await fs.unlink(outputPath).catch(() => {});
@@ -157,8 +164,8 @@ async function deliverSnapchatVideo(ctx, url, formatId, tempDir) {
 export default {
   name: 'snapchat',
   description: 'Snapchat story/spotlight downloader without watermark',
-  version: '2.1.0',
-  author: 'MATDEV',
+  version: '2.2.0',
+  author: 'Are Martins',
   commands: [
     {
       name: 'snap',
@@ -192,24 +199,31 @@ export default {
           const tempDir = path.join(process.cwd(), 'tmp');
           await fs.ensureDir(tempDir);
 
-          if (shouldReact()) await ctx.react('⏳');
+          await reactIfEnabled(ctx, '⏳');
 
           try {
-            const { formats, title, url: videoUrl } = await downloadWithYtDlp(validatedUrl.url, tempDir);
-
-            if (formats.length <= 1) {
-              await deliverSnapchatVideo(ctx, videoUrl, formats[0]?.formatId || 'best', tempDir);
-              if (shouldReact()) await ctx.react('✅');
-              return;
-            }
+            const { formats, title, url: videoUrl } = await withDelayedNotice(ctx, () => downloadWithYtDlp(validatedUrl.url));
 
             const choices = formats.map((format, index) => ({
               label: `${index + 1} - ${format.quality}${format.size ? ` (${formatFileSize(format.size)})` : ''}`,
-              formatId: format.formatId
+              formatId: format.formatId,
+              height: format.height
             }));
 
+            if (choices.length === 0) {
+              await deliverSnapchatVideo(ctx, videoUrl, 'best', tempDir);
+              await reactIfEnabled(ctx, '✅');
+              return;
+            }
+
+            if (choices.length === 1) {
+              await deliverSnapchatVideo(ctx, videoUrl, choices[0].formatId, tempDir);
+              await reactIfEnabled(ctx, '✅');
+              return;
+            }
+
             let prompt = `*${title}*\n\nSelect video quality by replying with the number:\n`;
-            prompt += choices.map(choice => choice.label).join('\n');
+            prompt += choices.map((choice) => choice.label).join('\n');
 
             await promptNumericSelection(ctx, {
               type: 'snapchat_quality',
@@ -217,22 +231,30 @@ export default {
               choices,
               data: { url: videoUrl, tempDir },
               handler: async (replyCtx, selected, choice, pending) => {
-                if (shouldReact()) await replyCtx.react('⏳');
+                await reactIfEnabled(replyCtx, '⏳');
                 try {
-                  await deliverSnapchatVideo(replyCtx, pending.data.url, selected.formatId, pending.data.tempDir);
-                  if (shouldReact()) await replyCtx.react('✅');
+                  await withDelayedNotice(replyCtx, () => attemptChoiceWithFallback({
+                    choices: pending.data.choices,
+                    selectedIndex: choice - 1,
+                    attempt: async (fallbackChoice) => {
+                      await deliverSnapchatVideo(replyCtx, pending.data.url, fallbackChoice.formatId, pending.data.tempDir);
+                    }
+                  }));
+                  await reactIfEnabled(replyCtx, '✅');
+                  await reactPendingOrigin(replyCtx, pending, '✅');
                 } catch (error) {
-                  if (shouldReact()) await replyCtx.react('❌');
-                  const message = error.message?.includes('Video too large')
+                  await reactIfEnabled(replyCtx, '❌');
+                  await reactPendingOrigin(replyCtx, pending, '❌');
+                  const message = error.message?.includes('Video too large') || error.message?.includes('All quality options failed')
                     ? error.message
-                    : 'Failed to download selected quality.';
+                    : 'Failed to download all available qualities.';
                   await replyCtx.reply(message);
                 }
                 return true;
               }
             });
           } catch (error) {
-            if (shouldReact()) await ctx.react('❌');
+            await reactIfEnabled(ctx, '❌');
             let errorMsg = 'Download failed. ';
             if (error.message?.includes('extract')) {
               errorMsg += 'Could not find media. Make sure the story/spotlight is public.';
@@ -244,10 +266,11 @@ export default {
             await ctx.reply(errorMsg);
           }
         } catch {
-          if (shouldReact()) await ctx.react('❌');
+          await reactIfEnabled(ctx, '❌');
           await ctx.reply('An error occurred while processing Snapchat media');
         }
       }
     }
   ]
 };
+

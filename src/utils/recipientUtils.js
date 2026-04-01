@@ -1,5 +1,5 @@
-import memoryStore from './memory.js';
-import { getKnownChats, getKnownContacts, resolveCanonicalJid, getLidMap } from './knownEntities.js';
+import memoryStore from '../state/memory.js';
+import { getKnownChats, getKnownContacts, resolveCanonicalJid, getLidMap } from '../state/knownEntities.js';
 import { normalizeWhatsAppJid } from './whatsappJid.js';
 
 export function getMemoryChats(platform = 'whatsapp') {

@@ -1,11 +1,8 @@
-import { getStorageSection, setStorageSection } from '../utils/storageStore.js';
+import { getAutodownloadConfig, setAutodownloadConfig } from '../state/autodownload.js';
 import { normalizeDestinationJid } from '../utils/destinationRouter.js';
+import logger from '../utils/logger.js';
 
-const STORAGE_KEY = 'autodownload';
-const DEFAULT_CONFIG = {
-  mode: 'off',
-  includeJids: []
-};
+const pluginLogger = logger.child({ component: 'autodownload' });
 
 const SUPPORTED_SERVICES = [
   {
@@ -44,26 +41,6 @@ const SUPPORTED_SERVICES = [
     pattern: /(?:https?:\/\/)?(?:www\.)?snapchat\.com\/(?:@|add\/|t\/|spotlight\/)[^\s]+|(?:https?:\/\/)?(?:t\.snapchat\.com|story\.snapchat\.com)\/[^\s]+/i
   }
 ];
-
-function getConfig() {
-  const config = getStorageSection(STORAGE_KEY, DEFAULT_CONFIG);
-  return {
-    mode: ['off', 'all', 'personal', 'group', 'include'].includes(config.mode) ? config.mode : 'off',
-    includeJids: Array.isArray(config.includeJids) ? [...new Set(config.includeJids.map(jid => String(jid).trim().toLowerCase()).filter(Boolean))] : []
-  };
-}
-
-function setConfig(patch) {
-  const current = getConfig();
-  const next = {
-    ...current,
-    ...patch
-  };
-  next.includeJids = Array.isArray(next.includeJids)
-    ? [...new Set(next.includeJids.map(jid => String(jid).trim().toLowerCase()).filter(Boolean))]
-    : [];
-  return setStorageSection(STORAGE_KEY, next);
-}
 
 function normalizeChatJid(value, ctx) {
   const raw = String(value || '').trim().toLowerCase();
@@ -144,12 +121,12 @@ export default {
   name: 'autodownload',
   description: 'Auto-detect supported media links and run existing downloader commands',
   version: '1.0.0',
-  author: 'MATDEV',
+  author: 'Are Martins',
 
   async onMessage(ctx) {
     if (ctx.command || !ctx.text || ctx.raw?.key?.remoteJid === 'status@broadcast') return;
 
-    const config = getConfig();
+    const config = getAutodownloadConfig();
     if (!isConfigEnabledForChat(ctx, config)) return;
 
     const match = extractSingleSupportedUrl(ctx.text);
@@ -158,7 +135,7 @@ export default {
     try {
       await dispatchExistingCommand(ctx, match.command, match.url);
     } catch (error) {
-      console.error('[autodownload] dispatch error', error?.message || error, error?.stack || '');
+      pluginLogger.error({ error, command: match.command, url: match.url }, 'Dispatch error');
     }
   },
 
@@ -173,7 +150,7 @@ export default {
       async execute(ctx) {
         const action = (ctx.args[0] || 'status').toLowerCase();
         const rawInput = ctx.args.join(' ').trim();
-        const config = getConfig();
+        const config = getAutodownloadConfig();
 
         const parseJidList = (input) => String(input || '')
           .split(',')
@@ -185,33 +162,33 @@ export default {
         }
 
         if (action === 'on') {
-          setConfig({ mode: 'all' });
+          setAutodownloadConfig({ mode: 'all' });
           return await ctx.reply('Auto-download is now ON for all chats.');
         }
 
         if (action === 'off') {
-          setConfig({ mode: 'off' });
+          setAutodownloadConfig({ mode: 'off' });
           return await ctx.reply('Auto-download is now OFF.');
         }
 
         if (action === 'p') {
-          setConfig({ mode: 'personal' });
+          setAutodownloadConfig({ mode: 'personal' });
           return await ctx.reply('Auto-download is now ON for personal chats only.');
         }
 
         if (action === 'g') {
-          setConfig({ mode: 'group' });
+          setAutodownloadConfig({ mode: 'group' });
           return await ctx.reply('Auto-download is now ON for group chats only.');
         }
 
         if (action === 'all') {
-          setConfig({ mode: 'all' });
+          setAutodownloadConfig({ mode: 'all' });
           return await ctx.reply('Auto-download is now ON for both personal chats and groups.');
         }
 
         const jids = parseJidList(rawInput);
         if (jids.length > 0) {
-          setConfig({ mode: 'include', includeJids: jids.map(jid => jid.toLowerCase()) });
+          setAutodownloadConfig({ mode: 'include', includeJids: jids.map(jid => jid.toLowerCase()) });
           return await ctx.reply(`Auto-download is now ON only for:\n${jids.join('\n')}`);
         }
 
@@ -220,3 +197,4 @@ export default {
     }
   ]
 };
+
