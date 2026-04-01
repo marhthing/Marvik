@@ -922,6 +922,146 @@ export default {
       }
     },
     {
+      name: 'play',
+      aliases: ['song', 'music'],
+      description: 'Search YouTube for a song and send it as audio with selection',
+      usage: '.play <song name>',
+      category: 'download',
+      ownerOnly: false,
+      adminOnly: false,
+      groupOnly: false,
+      cooldown: 15,
+      async execute(ctx) {
+        try {
+          const query = ctx.args.join(' ').trim();
+          if (!query) {
+            return await ctx.reply('Please provide a song name\n\nUsage: .play <song name>');
+          }
+
+          const tempDir = path.join(process.cwd(), 'tmp');
+          await fs.ensureDir(tempDir);
+
+          const cookiesState = await prepareCookiesFile();
+          if (cookiesState.enabled && !cookiesState.exists) {
+            pluginLogger.warn({ cookiesState }, 'Configured cookies file is missing');
+            await ctx.reply(getMissingCookiesFileHelp(cookiesState.path));
+            return;
+          }
+
+          await reactIfEnabled(ctx, '⏳');
+
+          try {
+            await withDelayedNotice(ctx, () => runExclusiveYouTubeTask(async ({ queued }) => {
+              if (queued) {
+                await ctx.reply('Another YouTube download is in progress. Your request is queued.');
+              }
+
+              const results = await youtubedl(`ytsearch5:${query}`, {
+                dumpSingleJson: true,
+                noWarnings: true,
+                flatPlaylist: true
+              });
+
+              const entries = Array.isArray(results?.entries)
+                ? results.entries.filter((entry) => entry?.id)
+                : [];
+
+              if (!entries.length) {
+                throw new Error('No matching song found on YouTube.');
+              }
+
+              const choices = entries.slice(0, 5).map((entry, index) => ({
+                index: index + 1,
+                id: entry.id,
+                title: entry.title || 'Unknown title',
+                uploader: entry.uploader || 'Unknown uploader',
+                duration: entry.duration || 0,
+                url: `https://www.youtube.com/watch?v=${entry.id}`
+              }));
+
+              if (choices.length === 1) {
+                const result = await downloadAudioWithYtDlp(choices[0].url, tempDir);
+                const audioBuffer = await fs.readFile(result.path);
+                await ctx._adapter.sendMedia(ctx.chatId, audioBuffer, 'audio', {
+                  mimetype: 'audio/mp4'
+                });
+                await reactIfEnabled(ctx, '✅');
+                await fs.unlink(result.path).catch(() => {});
+                return;
+              }
+
+              let prompt = `*Search results for:* ${query}\n\nReply with a number to choose a song:\n`;
+              prompt += choices.map((choice) => {
+                const duration = choice.duration ? formatDuration(choice.duration) : 'Unknown';
+                return `${choice.index} - ${choice.title}\n${choice.uploader} | ${duration}`;
+              }).join('\n\n');
+
+              await promptNumericSelection(ctx, {
+                type: 'youtube_play_selection',
+                prompt,
+                choices,
+                data: { tempDir },
+                handler: async (replyCtx, selected, choice, pending) => {
+                  await reactIfEnabled(replyCtx, '⏳');
+                  try {
+                    await withDelayedNotice(replyCtx, () => runExclusiveYouTubeTask(async ({ queued: selectionQueued }) => {
+                      if (selectionQueued) {
+                        await replyCtx.reply('Another YouTube download is in progress. Your selection is queued.');
+                      }
+
+                      const result = await downloadAudioWithYtDlp(selected.url, pending.data.tempDir);
+                      const audioBuffer = await fs.readFile(result.path);
+                      await replyCtx._adapter.sendMedia(replyCtx.chatId, audioBuffer, 'audio', {
+                        mimetype: 'audio/mp4'
+                      });
+                      await fs.unlink(result.path).catch(() => {});
+                    }));
+                    await reactIfEnabled(replyCtx, '✅');
+                    await reactPendingOrigin(replyCtx, pending, '✅');
+                  } catch (error) {
+                    await reactIfEnabled(replyCtx, '❌');
+                    await reactPendingOrigin(replyCtx, pending, '❌');
+                    if (error.message?.includes('Sign in to confirm') || error.message?.includes("you're not a bot")) {
+                      await replyCtx.reply(
+                        YTDLP_COOKIES_FILE
+                          ? 'Failed to download audio: YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
+                          : getYouTubeCookiesSetupHelp()
+                      );
+                      return true;
+                    }
+                    await replyCtx.reply(error.message || 'Failed to download the selected song.');
+                  }
+                  return true;
+                }
+              });
+            }));
+          } catch (error) {
+            pluginLogger.error({
+              error,
+              query,
+              chatId: ctx.chatId,
+              senderId: ctx.senderId,
+              stderr: error?.stderr || null,
+              stdout: error?.stdout || null
+            }, '.play execution failed');
+            await reactIfEnabled(ctx, '❌');
+            if (error.message?.includes('Sign in to confirm') || error.message?.includes("you're not a bot")) {
+              await ctx.reply(
+                YTDLP_COOKIES_FILE
+                  ? 'Failed to download audio: YouTube blocked this host even with the configured cookies. Try refreshing the cookies or using a different IP/proxy.'
+                  : getYouTubeCookiesSetupHelp()
+              );
+              return;
+            }
+            await ctx.reply(error.message || 'Failed to search and download the song.');
+          }
+        } catch {
+          await reactIfEnabled(ctx, '❌');
+          await ctx.reply('An error occurred while processing the song request');
+        }
+      }
+    },
+    {
       name: 'yts',
       aliases: ['ytsearch'],
       description: 'Search YouTube videos',

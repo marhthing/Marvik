@@ -7,11 +7,6 @@ import logger from '../utils/logger.js';
 
 const pluginLogger = logger.child({ component: 'antiviewonce' });
 
-// TEMP DEBUG: remove after anti-view-once detection is verified.
-function logViewOnceDebug(stage, details = {}) {
-  console.log('[antiviewonce-debug]', stage, details);
-}
-
 function resolveDestinationJid(ctx) {
   return resolveDestinationJidShared(ctx, getAntiviewonceConfig(), getOwnerJid(ctx) || ctx.chatId);
 }
@@ -187,7 +182,7 @@ async function extractAndSend(ctx, quotedContent, contextInfo) {
 
 const AntiViewOncePlugin = {
   name: 'antiviewonce',
-  description: 'Automatically captures view-once messages',
+  description: 'Manually extract view-once messages',
   category: 'privacy',
   commands: [
     {
@@ -243,52 +238,7 @@ const AntiViewOncePlugin = {
         }
       }
     }
-  ],
-  onLoad: async (bot) => {
-    pluginLogger.info('Plugin loaded');
-    const adapter = bot.getAdapter('whatsapp');
-    if (!adapter) return;
-
-    bot.on('message', async (ctx) => {
-      if (ctx.platform !== 'whatsapp') return;
-
-      const msg = ctx.raw;
-      logViewOnceDebug('message-received', {
-        chatId: ctx.chatId,
-        messageId: ctx.messageId,
-        hasViewOnceMessage: Boolean(msg?.message?.viewOnceMessage),
-        hasViewOnceMessageV2: Boolean(msg?.message?.viewOnceMessageV2),
-        hasViewOnceMessageV3: Boolean(msg?.message?.viewOnceMessageV3),
-        hasViewOnceMessageV2Extension: Boolean(msg?.message?.viewOnceMessageV2Extension),
-        hasEphemeralMessage: Boolean(msg?.message?.ephemeralMessage),
-        hasDirectImageViewOnce: Boolean(msg?.message?.imageMessage?.viewOnce),
-        hasDirectVideoViewOnce: Boolean(msg?.message?.videoMessage?.viewOnce),
-        hasDirectAudioViewOnce: Boolean(msg?.message?.audioMessage?.viewOnce),
-        detectedWrapper: hasViewOnceWrapper(msg?.message)
-      });
-
-      if (hasViewOnceWrapper(msg.message)) {
-        logViewOnceDebug('view-once-detected', {
-          chatId: ctx.chatId,
-          messageId: ctx.messageId
-        });
-        pluginLogger.debug({ chatId: ctx.chatId, messageId: ctx.messageId }, 'View-once detected');
-        const quotedMessage = unwrapViewOnceMessage(msg.message);
-
-        if (quotedMessage) {
-          logViewOnceDebug('view-once-unwrapped', {
-            messageId: ctx.messageId,
-            keys: Object.keys(quotedMessage || {})
-          });
-          await extractAndSend(ctx, quotedMessage, msg.messageContextInfo || msg.contextInfo);
-        } else {
-          logViewOnceDebug('view-once-unwrapped-empty', {
-            messageId: ctx.messageId
-          });
-        }
-      }
-    });
-  }
+  ]
 };
 
 export default AntiViewOncePlugin;
