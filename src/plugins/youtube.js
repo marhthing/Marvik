@@ -22,7 +22,7 @@ const execFileAsync = promisify(execFile);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
-const MAX_VIDEO_HEIGHT = 1080;
+const MAX_VIDEO_HEIGHT = 720;
 const DEFAULT_VIDEO_FORMAT = `bestvideo[height<=${MAX_VIDEO_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${MAX_VIDEO_HEIGHT}][vcodec!=none][acodec!=none]/best[height<=${MAX_VIDEO_HEIGHT}]`;
 const SHORTS_VIDEO_FORMAT = `best[height<=${MAX_VIDEO_HEIGHT}]/best`;
 const FALLBACK_MERGE_VIDEO_FORMAT = `bestvideo*[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]/best`;
@@ -482,7 +482,7 @@ async function getVideoFormats(url) {
     const formatId = format.format_id;
     if (!hasVideo || !height || !formatId || height > MAX_VIDEO_HEIGHT) continue;
 
-    const normalizedHeight = [1080, 720, 480, 360, 240, 144]
+    const normalizedHeight = [720, 480, 360, 240, 144]
       .find(item => height >= item) || height;
 
     const entry = groupedFormats.get(normalizedHeight) || [];
