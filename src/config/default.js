@@ -12,6 +12,7 @@ const requiredVars = {
   OWNER_NUMBER: '',
   BOT_LANG: 'en',
   ENABLE_WHATSAPP: 'true',
+  STORAGE_BACKUP_KEY: '',
   LOG_LEVEL: 'info',
   LOG_PRETTY: 'true',
   LOG_TIMESTAMPS: 'true',
@@ -58,6 +59,7 @@ export default {
   // Owner settings
   ownerNumber: process.env.OWNER_NUMBER || '',
   botLang: process.env.BOT_LANG || 'en',
+  storageBackupKey: process.env.STORAGE_BACKUP_KEY || '',
 
   // Platform toggles
   platforms: {

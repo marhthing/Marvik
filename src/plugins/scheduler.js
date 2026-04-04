@@ -5,6 +5,7 @@ import {
   formatScheduledTime,
   getJobs,
   parseTimeSpec,
+  readSchedulerMedia,
   registerJobHandler,
   removeJob,
   startScheduler,
@@ -103,10 +104,10 @@ async function sendScheduledStatus(whatsapp, payload) {
   if (payload.kind === 'text') {
     message.text = payload.text;
   } else if (payload.kind === 'image') {
-    message.image = fs.readFileSync(payload.mediaPath);
+    message.image = readSchedulerMedia(payload.mediaPath);
     if (payload.caption) message.caption = payload.caption;
   } else if (payload.kind === 'video') {
-    message.video = fs.readFileSync(payload.mediaPath);
+    message.video = readSchedulerMedia(payload.mediaPath);
     if (payload.caption) message.caption = payload.caption;
     if (payload.mimetype) message.mimetype = payload.mimetype;
   } else {

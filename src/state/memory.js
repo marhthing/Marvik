@@ -3,6 +3,7 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import path from 'path';
 import logger from '../utils/logger.js';
+import { readEncryptedBuffer, readEncryptedJson, writeEncryptedBuffer, writeEncryptedJson } from '../utils/secureDiskStore.js';
 
 const STORAGE_DIR = path.join(process.cwd(), 'storage', 'messages');
 const MEDIA_DIR = path.join(process.cwd(), 'storage', 'media');
@@ -87,7 +88,7 @@ class MemoryStore {
       await fsp.mkdir(chatDir, { recursive: true });
 
       const filePath = path.join(chatDir, `${messageId}.json`);
-      await fsp.writeFile(filePath, JSON.stringify(data));
+      writeEncryptedJson(filePath, data);
       return filePath;
     });
   }
@@ -101,7 +102,7 @@ class MemoryStore {
         await fsp.mkdir(mediaDir, { recursive: true });
 
         const mediaPath = path.join(mediaDir, `${messageId}.${extension}`);
-        await fsp.writeFile(mediaPath, buffer);
+        writeEncryptedBuffer(mediaPath, buffer);
         return mediaPath;
       });
     } catch (err) {
@@ -120,7 +121,7 @@ class MemoryStore {
       const mediaFile = files.find(f => f.startsWith(messageId + '.'));
       if (mediaFile) {
         const mediaPath = path.join(mediaDir, mediaFile);
-        return fs.readFileSync(mediaPath);
+        return readEncryptedBuffer(mediaPath);
       }
     } catch {}
     return null;
@@ -135,7 +136,7 @@ class MemoryStore {
         const safeChatId = chatId.replace(/[^a-zA-Z0-9]/g, '_');
         const filePath = path.join(STORAGE_DIR, platform, safeChatId, `${messageId}.json`);
         if (fs.existsSync(filePath)) {
-          msg = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          msg = readEncryptedJson(filePath, null);
           if (!this.messages[platform]) this.messages[platform] = {};
           if (!this.messages[platform][chatId]) this.messages[platform][chatId] = {};
           this.messages[platform][chatId][messageId] = msg;

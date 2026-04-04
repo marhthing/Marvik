@@ -25,6 +25,7 @@ PREFIX=.
 OWNER_NUMBER=2347000000000
 BOT_LANG=en
 ENABLE_WHATSAPP=true
+STORAGE_BACKUP_KEY=your_secret_here
 LOG_LEVEL=info
 LOG_PRETTY=true
 LOG_TIMESTAMPS=true
@@ -39,7 +40,10 @@ STICKER_PACK=Marvik
 STICKER_AUTHOR=Are Martins
 BOT_REACTIONS=on
 AUTO_RESTART_HOURS=0
+STORAGE_BACKUP_KEY=your_secret_here
 ```
+
+`STORAGE_BACKUP_KEY` is recommended if you use message/media recovery features. It encrypts disk-backed message archives and recovered media under `storage/messages`, `storage/media`, `storage/scheduler_media`, and `storage/viewonce`.
 
 Language:
 

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { getStorageSection, setStorageSection } from '../utils/storageStore.js';
+import { readEncryptedBuffer, writeEncryptedBuffer } from '../utils/secureDiskStore.js';
 
 const STORAGE_KEY = 'scheduler';
 const MEDIA_DIR = path.resolve(process.cwd(), 'storage', 'scheduler_media');
@@ -114,8 +115,13 @@ export function createSchedulerMediaFile(extension = 'bin') {
 
 export function writeSchedulerMedia(buffer, extension = 'bin') {
   const filePath = createSchedulerMediaFile(extension);
-  fs.writeFileSync(filePath, buffer);
+  writeEncryptedBuffer(filePath, buffer);
   return filePath;
+}
+
+export function readSchedulerMedia(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  return readEncryptedBuffer(filePath);
 }
 
 export function cleanupSchedulerMedia(filePath) {
