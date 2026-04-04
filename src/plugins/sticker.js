@@ -10,6 +10,7 @@ import {
   getPinterestMediaInfo,
   validatePinterestUrl
 } from '../utils/pinterest.js';
+import { getStickerId } from '../utils/stickerIdentity.js';
 import { getStickerCommands, setStickerCommands } from '../state/stickerCommands.js';
 import logger from '../utils/logger.js';
 
@@ -72,7 +73,7 @@ async function sendStickerFromBuffer(ctx, Sticker, StickerTypes, stickerPack, st
 export default {
   name: 'sticker',
   description: 'Convert media to a sticker',
-  version: '1.2.1',
+  version: '1.2.2',
   author: 'Are Martins',
   commands: [
     {
@@ -185,17 +186,13 @@ export default {
           return;
         }
 
-        const stickerMessage = stickerTarget.media;
-        const fileSha256 = stickerMessage.fileSha256;
-
-        if (!fileSha256) {
+        const stickerId = getStickerId(stickerTarget.media, stickerTarget.raw);
+        if (!stickerId) {
           await ctx.reply('❌ Could not identify the sticker.');
           return;
         }
 
-        const stickerId = Buffer.from(fileSha256).toString('base64');
         const stickerCommands = getStickerCommands();
-
         stickerCommands[stickerId] = cmd.startsWith('.') ? cmd.slice(1) : cmd;
         setStickerCommands(stickerCommands);
 
@@ -215,17 +212,13 @@ export default {
           return;
         }
 
-        const stickerMessage = stickerTarget.media;
-        const fileSha256 = stickerMessage.fileSha256;
-
-        if (!fileSha256) {
+        const stickerId = getStickerId(stickerTarget.media, stickerTarget.raw);
+        if (!stickerId) {
           await ctx.reply('❌ Could not identify the sticker.');
           return;
         }
 
-        const stickerId = Buffer.from(fileSha256).toString('base64');
         const stickerCommands = getStickerCommands();
-
         if (!stickerCommands[stickerId]) {
           await ctx.reply('❌ This sticker has no command bound to it.');
           return;

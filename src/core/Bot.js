@@ -13,6 +13,7 @@ import memoryStore from '../state/memory.js';
 import { getOwnerJidFromConfig } from '../utils/whatsappJid.js';
 import { getKnownContacts } from '../state/knownEntities.js';
 import { getStickerCommands } from '../state/stickerCommands.js';
+import { getStickerId } from '../utils/stickerIdentity.js';
 import {
   clearPendingLifecycleAction,
   getPendingLifecycleAction,
@@ -274,9 +275,8 @@ export default class Bot extends EventEmitter {
     if (messageContext.platform === 'whatsapp' && messageContext.raw?.message?.stickerMessage) {
       try {
         const stickerMessage = messageContext.raw.message.stickerMessage;
-        const fileSha256 = stickerMessage.fileSha256;
-        if (fileSha256) {
-          const stickerId = Buffer.from(fileSha256).toString('base64');
+        const stickerId = getStickerId(stickerMessage, messageContext.raw);
+        if (stickerId) {
           const stickerCommands = getStickerCommands();
           const boundCmd = stickerCommands[stickerId];
           
