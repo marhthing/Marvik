@@ -22,10 +22,10 @@ const execFileAsync = promisify(execFile);
 const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
-const MAX_VIDEO_HEIGHT = 720;
-const DEFAULT_VIDEO_FORMAT = `bestvideo[height<=${MAX_VIDEO_HEIGHT}][ext=mp4]+bestaudio[ext=m4a]/best[height<=${MAX_VIDEO_HEIGHT}][vcodec!=none][acodec!=none]/best[height<=${MAX_VIDEO_HEIGHT}]`;
-const SHORTS_VIDEO_FORMAT = `best[height<=${MAX_VIDEO_HEIGHT}]/best`;
-const FALLBACK_MERGE_VIDEO_FORMAT = `bestvideo*[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]/best`;
+const MENU_MAX_VIDEO_HEIGHT = 720;
+const DEFAULT_VIDEO_FORMAT = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[vcodec!=none][acodec!=none]/best';
+const SHORTS_VIDEO_FORMAT = 'best/best';
+const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*+bestaudio/best[vcodec!=none][acodec!=none]/best';
 const YOUTUBE_EXTRACTOR_ARGS = 'youtube:player-client=mweb,ios;formats=missing_pot';
 let youtubeTaskQueue = Promise.resolve();
 let youtubeQueueDepth = 0;
@@ -422,7 +422,7 @@ async function getVideoFormatsFromList(url) {
       if (!/video only|mp4a|audio/i.test(details) && !/\d{2,5}x\d{2,5}|\d{3,4}p/i.test(details)) continue;
 
       const height = parseHeightFromFormatText(details);
-      if (!height || height > MAX_VIDEO_HEIGHT) continue;
+      if (!height) continue;
 
       rawFormats.push({
         format_id: formatId,
@@ -480,7 +480,7 @@ async function getVideoFormats(url) {
     const height = format.height || 0;
     const hasVideo = format.vcodec && format.vcodec !== 'none';
     const formatId = format.format_id;
-    if (!hasVideo || !height || !formatId || height > MAX_VIDEO_HEIGHT) continue;
+    if (!hasVideo || !height || !formatId || height > MENU_MAX_VIDEO_HEIGHT) continue;
 
     const normalizedHeight = [720, 480, 360, 240, 144]
       .find(item => height >= item) || height;
@@ -607,14 +607,14 @@ async function downloadVideoWithFallback(url, tempDir) {
   const attempts = isYouTubeShort(url)
     ? [
         SHORTS_VIDEO_FORMAT,
-        `best[height<=${MAX_VIDEO_HEIGHT}]`,
-        `bestvideo*[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]`
+        'best',
+        'bestvideo*+bestaudio/best'
       ]
     : [
         DEFAULT_VIDEO_FORMAT,
-        `best[height<=${MAX_VIDEO_HEIGHT}][ext=mp4]/best[height<=${MAX_VIDEO_HEIGHT}]/best`,
+        'best[ext=mp4]/best',
         FALLBACK_MERGE_VIDEO_FORMAT,
-        `bestvideo*[height<=${MAX_VIDEO_HEIGHT}]+bestaudio/best[height<=${MAX_VIDEO_HEIGHT}]`
+        'bestvideo*+bestaudio/best'
       ];
 
   let lastError = null;
