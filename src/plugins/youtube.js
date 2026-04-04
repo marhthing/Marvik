@@ -23,6 +23,7 @@ const VIDEO_SIZE_LIMIT = 2 * 1024 * 1024 * 1024;
 const VIDEO_MEDIA_LIMIT = 30 * 1024 * 1024;
 const AUDIO_SIZE_LIMIT = 100 * 1024 * 1024;
 const MENU_MAX_VIDEO_HEIGHT = 720;
+const DISPLAY_VIDEO_HEIGHTS = [720, 480, 360, 240, 144];
 const DEFAULT_VIDEO_FORMAT = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[vcodec!=none][acodec!=none]/best';
 const SHORTS_VIDEO_FORMAT = 'best/best';
 const FALLBACK_MERGE_VIDEO_FORMAT = 'bestvideo*+bestaudio/best[vcodec!=none][acodec!=none]/best';
@@ -474,25 +475,22 @@ async function getVideoFormats(url) {
     }
   }
 
-  const groupedFormats = new Map();
-
-  for (const format of info.formats || []) {
+  const allVideoFormats = (info.formats || []).filter((format) => {
     const height = format.height || 0;
     const hasVideo = format.vcodec && format.vcodec !== 'none';
     const formatId = format.format_id;
-    if (!hasVideo || !height || !formatId || height > MENU_MAX_VIDEO_HEIGHT) continue;
-
-    const normalizedHeight = [720, 480, 360, 240, 144]
-      .find(item => height >= item) || height;
-
-    const entry = groupedFormats.get(normalizedHeight) || [];
-    entry.push(format);
-    groupedFormats.set(normalizedHeight, entry);
-  }
+    return Boolean(hasVideo && height && formatId);
+  });
 
   const formats = [];
 
-  for (const [normalizedHeight, candidates] of groupedFormats.entries()) {
+  for (const normalizedHeight of DISPLAY_VIDEO_HEIGHTS) {
+    const candidates = allVideoFormats.filter((format) => (format.height || 0) === normalizedHeight);
+    const hasHigherFormat = allVideoFormats.some((format) => (format.height || 0) > normalizedHeight);
+    if (!candidates.length && !hasHigherFormat) {
+      continue;
+    }
+
     const sortedCandidates = [...candidates].sort((a, b) => {
       const aHasAudio = a.acodec && a.acodec !== 'none' ? 1 : 0;
       const bHasAudio = b.acodec && b.acodec !== 'none' ? 1 : 0;
@@ -511,7 +509,7 @@ async function getVideoFormats(url) {
       );
     });
 
-    const bestCandidate = sortedCandidates[0];
+    const bestCandidate = sortedCandidates[0] || null;
     const directSelectors = [];
     const progressiveSelectors = [];
 
@@ -528,13 +526,15 @@ async function getVideoFormats(url) {
     const selectorChain = Array.from(new Set([
       ...progressiveSelectors,
       ...directSelectors,
+      buildProgressiveSelector(normalizedHeight, 'mp4'),
+      buildProgressiveSelector(normalizedHeight, 'webm'),
       `bestvideo*[height<=${normalizedHeight}]+bestaudio/best[height<=${normalizedHeight}][vcodec!=none][acodec!=none]/best[height<=${normalizedHeight}]/best`
     ]));
 
     formats.push({
       quality: `${normalizedHeight}p`,
       height: normalizedHeight,
-      size: bestCandidate.filesize || bestCandidate.filesize_approx || 0,
+      size: bestCandidate?.filesize || bestCandidate?.filesize_approx || 0,
       formatSelectors: selectorChain,
       formatString: selectorChain[0]
     });

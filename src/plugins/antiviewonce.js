@@ -8,7 +8,7 @@ import logger from '../utils/logger.js';
 const pluginLogger = logger.child({ component: 'antiviewonce' });
 
 function resolveDestinationJid(ctx) {
-  return resolveDestinationJidShared(ctx, getAntiviewonceConfig(), getOwnerJid(ctx) || ctx.chatId);
+  return resolveDestinationJidShared(ctx, getAntiviewonceConfig(), getOwnerJid(ctx) || ctx.chatId, { allowGroup: true });
 }
 
 function unwrapViewOnceMessage(message = {}) {

@@ -42,7 +42,7 @@ const SavePlugin = {
           }
 
           const conf = getSaveConfig();
-          const destJid = resolveDestinationJid(ctx, conf, getOwnerJid(ctx));
+          const destJid = resolveDestinationJid(ctx, conf, getOwnerJid(ctx), { allowGroup: true });
 
           await ctx.platformAdapter.client.sendMessage(destJid, {
             forward: buildForwardPayload(ctx)
