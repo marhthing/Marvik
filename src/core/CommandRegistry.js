@@ -16,11 +16,6 @@ export default class CommandRegistry {
     this.commandExecutedHandlers = new Set();
   }
 
-  /**
-   * Register a command
-   * @param {string} name - Command name
-   * @param {object} commandData - Command configuration
-   */
   register(name, commandData) {
     if (this.commands.has(name)) {
       this.logger.warn(`Command '${name}' is already registered. Overwriting...`);
@@ -90,10 +85,6 @@ export default class CommandRegistry {
     return Array.from(uniqueCommands.values());
   }
 
-  /**
-   * Execute a command
-   * Only allow execution if fromMe, unless the command or config allows exceptions
-   */
   async execute(messageContext) {
     const botReactions = getBooleanEnv('BOT_REACTIONS', true) ? 'on' : 'off';
 
@@ -209,7 +200,7 @@ export default class CommandRegistry {
         }
       }
 
-      if (botReactions === 'on' && typeof messageContext.react === 'function') {
+      if (!messageContext._deferReactionCompletion && botReactions === 'on' && typeof messageContext.react === 'function') {
         try {
           await messageContext.react('✅');
         } catch {
@@ -221,7 +212,7 @@ export default class CommandRegistry {
     } catch (error) {
       this.logger.error({ error, command: command.name }, 'Command execution failed');
 
-      if (botReactions === 'on' && typeof messageContext.react === 'function') {
+      if (!messageContext._deferReactionCompletion && botReactions === 'on' && typeof messageContext.react === 'function') {
         try {
           await messageContext.react('❌');
         } catch {

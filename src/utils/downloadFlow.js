@@ -4,7 +4,7 @@ import os from 'os';
 import path from 'path';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import pendingActions from './pendingActions.js';
+import pendingActions, { shouldReact } from './pendingActions.js';
 
 const execFileAsync = promisify(execFile);
 const FFMPEG_PATH = ffmpegInstaller.path;
@@ -202,6 +202,7 @@ export async function promptNumericSelection(ctx, options) {
     handler
   } = options;
 
+  ctx._deferReactionCompletion = true;
   const sentMsg = await ctx.reply(prompt);
 
   pendingActions.set(ctx.chatId, sentMsg.key.id, {
@@ -229,6 +230,7 @@ export async function promptNumericSelection(ctx, options) {
 }
 
 export async function reactPendingOrigin(replyCtx, pending, emoji) {
+  if (!shouldReact()) return false;
   const originChatId = pending?.data?.originChatId;
   const originMessageKey = pending?.data?.originMessageKey;
   if (!originChatId || !originMessageKey || !replyCtx?._adapter?.sendReaction) return false;

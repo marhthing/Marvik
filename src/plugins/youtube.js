@@ -388,7 +388,7 @@ function parseHeightFromFormatText(text) {
   if (!text) return 0;
   const resolutionMatch = text.match(/(\d{2,5})x(\d{2,5})/);
   if (resolutionMatch) return Number(resolutionMatch[2]) || 0;
-  const qualityMatch = text.match(/(^|\s)(\d{3,4})p(\s|$)/i);
+  const qualityMatch = text.match(/(^|\s)(\d{3,4})p(?:\d+)?(\s|$)/i);
   if (qualityMatch) return Number(qualityMatch[2]) || 0;
   return 0;
 }
