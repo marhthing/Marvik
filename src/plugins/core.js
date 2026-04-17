@@ -125,7 +125,7 @@ export default {
             return;
           } else {
             await ctx.reply('🗑️ Update available! updating....');
-            const repoUrl = 'https://github.com/marhthing/MatBot.git';
+            const repoUrl = 'https://github.com/marhthing/Marvik.git';
             const tempDir = path.join(cwd, 'temp_update');
             // Clone latest code to temp_update
             if (fs.existsSync(tempDir)) {
@@ -215,7 +215,7 @@ export default {
         const fs = await import('fs');
         const { execSync } = await import('child_process');
         const path = await import('path');
-        const repoUrl = 'https://github.com/marhthing/MatBot.git';
+        const repoUrl = 'https://github.com/marhthing/Marvik.git';
         const tempDir = path.join(cwd, 'temp_update');
         if (fs.existsSync(tempDir)) {
           if (process.platform === 'win32') {

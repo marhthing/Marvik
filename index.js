@@ -13,7 +13,7 @@ let botProcess = null;
 managerLogger.info('Marvik Auto-Manager');
 managerLogger.info(`Working in: ${__dirname}`);
 
-const GITHUB_REPO = 'https://github.com/marhthing/MatBot.git';
+const GITHUB_REPO = 'https://github.com/marhthing/Marvik.git';
 const isInitialSetup = !existsSync('src/index.js') || !existsSync('package.json');
 const isRestart = existsSync('.restart_flag');
 
