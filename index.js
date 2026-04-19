@@ -2,22 +2,23 @@ import { spawn, spawnSync } from 'child_process';
 import { existsSync, unlinkSync } from 'fs';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
-import bootstrapLogger from './src/utils/bootstrapLogger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const managerLogger = bootstrapLogger.child('manager');
+let managerLogger = createFallbackLogger('manager');
 
 let botProcess = null;
-
-managerLogger.info('Marvik Auto-Manager');
-managerLogger.info(`Working in: ${__dirname}`);
 
 const GITHUB_REPO = 'https://github.com/marhthing/Marvik.git';
 const isInitialSetup = !existsSync('src/index.js') || !existsSync('package.json');
 const isRestart = existsSync('.restart_flag');
 
 (async () => {
+  managerLogger = await resolveManagerLogger();
+
+  managerLogger.info('Marvik Auto-Manager');
+  managerLogger.info(`Working in: ${__dirname}`);
+
   if (isRestart) {
     managerLogger.info('Restart flag detected, clearing flag...');
     try { unlinkSync('.restart_flag'); } catch {}
@@ -32,6 +33,38 @@ const isRestart = existsSync('.restart_flag');
   managerLogger.info('Starting Marvik...');
   startBot('src/index.js');
 })();
+
+function createFallbackLogger(scope = 'app') {
+  const prefix = `[${scope}]`;
+  return {
+    child(childScope) {
+      return createFallbackLogger(`${scope}:${childScope}`);
+    },
+    info(...args) {
+      console.log(prefix, ...args);
+    },
+    warn(...args) {
+      console.warn(prefix, ...args);
+    },
+    error(...args) {
+      console.error(prefix, ...args);
+    },
+  };
+}
+
+async function resolveManagerLogger() {
+  const bootstrapPath = './src/utils/bootstrapLogger.js';
+  if (!existsSync(bootstrapPath)) return createFallbackLogger('manager');
+
+  try {
+    const mod = await import(bootstrapPath);
+    const bootstrapLogger = mod?.default;
+    if (!bootstrapLogger?.child) return createFallbackLogger('manager');
+    return bootstrapLogger.child('manager');
+  } catch {
+    return createFallbackLogger('manager');
+  }
+}
 
 async function cloneAndSetup() {
   managerLogger.info('Cloning bot from GitHub...');
